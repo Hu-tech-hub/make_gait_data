@@ -69,6 +69,10 @@ class GaitAnalyzer:
         self.joint_distances = {}
         self.events = []
         
+    def round_coords(self, value: float) -> float:
+        """좌표값을 소수점 5자리로 제한하여 연산 속도 향상"""
+        return round(float(value), 5)
+    
     def step1_prepare_video_data(self) -> pd.DataFrame:
         """
         Step 1: 데이터 준비 및 비디오 전처리
@@ -124,11 +128,11 @@ class GaitAnalyzer:
         cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8)
         angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
         
-        return np.degrees(angle)
+        return self.round_coords(np.degrees(angle))
     
     def calculate_distance(self, p1: np.ndarray, p2: np.ndarray) -> float:
         """두 점 사이의 유클리드 거리 계산"""
-        return np.linalg.norm(p1 - p2)
+        return self.round_coords(np.linalg.norm(p1 - p2))
     
     def step2_extract_joint_signals(self) -> Dict:
         """
@@ -169,9 +173,9 @@ class GaitAnalyzer:
                 for joint_name, idx in JOINT_INDICES.items():
                     if idx < len(landmarks):
                         landmark = landmarks[idx]
-                        time_series_data[f'{joint_name}_x'].append(landmark.x)
-                        time_series_data[f'{joint_name}_y'].append(landmark.y)
-                        time_series_data[f'{joint_name}_z'].append(landmark.z)
+                        time_series_data[f'{joint_name}_x'].append(self.round_coords(landmark.x))
+                        time_series_data[f'{joint_name}_y'].append(self.round_coords(landmark.y))
+                        time_series_data[f'{joint_name}_z'].append(self.round_coords(landmark.z))
                     else:
                         # 누락된 경우 NaN 처리
                         time_series_data[f'{joint_name}_x'].append(np.nan)
@@ -187,6 +191,11 @@ class GaitAnalyzer:
         
         # DataFrame 변환
         df = pd.DataFrame(time_series_data)
+        
+        # 모든 좌표 컬럼을 한 번에 반올림 처리 (속도 최적화)
+        coord_columns = [col for col in df.columns if any(coord in col for coord in ['_x', '_y', '_z'])]
+        for col in coord_columns:
+            df[col] = df[col].round(5)
         
         # 관절 간 거리 계산
         logger.info("관절 간 거리 계산 중...")
