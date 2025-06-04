@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PyQt 기반 실험 제어 및 시각화 시스템
-비디오와 IMU 센서 데이터의 동기화된 수집 및 저장
+비디오와 IMU 센서 데이터의 동기화된 수집 시스템
 """
 
 import sys
-import os
 import json
 import csv
 import time
-import threading
-import queue
 from datetime import datetime
 from pathlib import Path
 
@@ -23,10 +19,10 @@ from PyQt5.QtGui import *
 import socket
 
 # 전역 설정
-VIDEO_FPS = 30  # 비디오 프레임률
-IMU_PORT = 5000  # IMU 데이터 수신 포트
-CAMERA_INDEX = 1  # 웹캠 인덱스
-OUTPUT_DIR = "experiment_data"  # 저장 디렉토리
+VIDEO_FPS = 30
+IMU_PORT = 5000
+CAMERA_INDEX = 1
+OUTPUT_DIR = "experiment_data"
 
 
 class IMUReceiver(QThread):
@@ -42,14 +38,14 @@ class IMUReceiver(QThread):
         self.data_buffer = []
         self.recording = False
         self.sync_start_time = None
-        self.incomplete_line = ""  # 불완전한 JSON 라인 버퍼
-        self.total_received = 0    # 수신된 총 샘플 수
-        self.total_errors = 0      # 파싱 오류 수
+        self.incomplete_line = ""
+        self.total_received = 0
+        self.total_errors = 0
+        self.first_imu_timestamp = None
         
     def run(self):
         self.running = True
         try:
-            # 서버 소켓 생성
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server_socket.bind(('', IMU_PORT))
@@ -61,27 +57,21 @@ class IMUReceiver(QThread):
             while self.running:
                 try:
                     if not self.client_socket:
-                        # 클라이언트 연결 대기
                         self.client_socket, addr = self.server_socket.accept()
                         self.client_socket.settimeout(0.1)
                         self.connection_status.emit(f"IMU 연결됨: {addr[0]}")
                     
-                    # 데이터 수신
                     try:
-                        data = self.client_socket.recv(8192).decode('utf-8')  # 버퍼 크기 증가: 4096 → 8192
+                        data = self.client_socket.recv(8192).decode('utf-8')
                         if data:
-                            # 이전에 불완전했던 라인과 합치기
                             if self.incomplete_line:
                                 data = self.incomplete_line + data
                                 self.incomplete_line = ""
                             
-                            # JSON 데이터 파싱 (여러 줄 처리)
                             lines = data.strip().split('\n')
                             
-                            # 마지막 라인이 불완전할 수 있으므로 따로 처리
                             for i, line in enumerate(lines):
                                 if line:
-                                    # 마지막 라인이고 JSON이 불완전하면 버퍼에 저장
                                     if i == len(lines) - 1 and not data.endswith('\n'):
                                         self.incomplete_line = line
                                         continue
@@ -90,19 +80,24 @@ class IMUReceiver(QThread):
                                         imu_data = json.loads(line)
                                         self.total_received += 1
                                         
-                                        # 동기화된 타임스탬프 추가
                                         if self.recording and self.sync_start_time:
-                                            imu_data['sync_timestamp'] = time.time() - self.sync_start_time
+                                            original_timestamp = imu_data.get('timestamp', 0)
+                                            
+                                            if self.first_imu_timestamp is None:
+                                                self.first_imu_timestamp = original_timestamp
+                                                imu_data['sync_timestamp'] = 0.0
+                                            else:
+                                                relative_time = original_timestamp - self.first_imu_timestamp
+                                                imu_data['sync_timestamp'] = relative_time
+                                            
                                             self.data_buffer.append(imu_data)
                                         
                                         self.data_received.emit(imu_data)
                                     except json.JSONDecodeError:
                                         self.total_errors += 1
-                                        # 오류가 발생한 라인 로깅 (너무 많으면 스킵)
                                         if self.total_errors <= 10:
                                             self.connection_status.emit(f"JSON 파싱 오류 #{self.total_errors}: {line[:50]}...")
                         else:
-                            # 연결 끊김
                             self.client_socket = None
                             self.connection_status.emit(f"IMU 연결 끊김 (수신: {self.total_received}, 오류: {self.total_errors})")
                     except socket.timeout:
@@ -122,20 +117,20 @@ class IMUReceiver(QThread):
             self.cleanup()
     
     def start_recording(self, sync_time):
-        """녹화 시작"""
         self.sync_start_time = sync_time
         self.recording = True
         self.data_buffer.clear()
-        # 통계 초기화
         self.total_received = 0
         self.total_errors = 0
-        self.connection_status.emit("IMU 녹화 시작 - 통계 초기화")
+        self.first_imu_timestamp = None
+        self.connection_status.emit("IMU 녹화 시작")
     
-    def stop_recording(self):
-        """녹화 중지"""
+    def stop_recording(self, actual_duration=None):
         self.recording = False
         
-        # 데이터 수신 통계 보고
+        if self.data_buffer and actual_duration is not None:
+            self._interpolate_to_30hz(actual_duration)
+        
         buffer_count = len(self.data_buffer)
         loss_rate = (self.total_errors / max(self.total_received + self.total_errors, 1)) * 100
         self.connection_status.emit(
@@ -144,6 +139,74 @@ class IMUReceiver(QThread):
         )
         
         return self.data_buffer.copy()
+    
+    def _interpolate_to_30hz(self, pc_duration):
+        if not self.data_buffer:
+            return
+        
+        # 유효 데이터 필터링
+        valid_data = [data for data in self.data_buffer if data['sync_timestamp'] <= pc_duration]
+        if not valid_data:
+            self.data_buffer.clear()
+            return
+        
+        # 30Hz 보간
+        downsampled_data = []
+        total_frames = int(pc_duration * VIDEO_FPS)
+        
+        for frame_idx in range(total_frames):
+            frame_time = frame_idx / VIDEO_FPS
+            
+            # 전후 데이터 찾기
+            before_data = None
+            after_data = None
+            
+            for data in valid_data:
+                if data['sync_timestamp'] <= frame_time:
+                    if before_data is None or data['sync_timestamp'] > before_data['sync_timestamp']:
+                        before_data = data
+                elif data['sync_timestamp'] > frame_time:
+                    if after_data is None or data['sync_timestamp'] < after_data['sync_timestamp']:
+                        after_data = data
+            
+            if before_data and after_data:
+                # 선형 보간
+                t1, t2 = before_data['sync_timestamp'], after_data['sync_timestamp']
+                ratio = (frame_time - t1) / (t2 - t1) if t2 != t1 else 0
+                
+                interpolated_data = {
+                    'frame_number': frame_idx,
+                    'sync_timestamp': frame_time,
+                    'accel': {
+                        'x': before_data['accel']['x'] + ratio * (after_data['accel']['x'] - before_data['accel']['x']),
+                        'y': before_data['accel']['y'] + ratio * (after_data['accel']['y'] - before_data['accel']['y']),
+                        'z': before_data['accel']['z'] + ratio * (after_data['accel']['z'] - before_data['accel']['z'])
+                    },
+                    'gyro': {
+                        'x': before_data['gyro']['x'] + ratio * (after_data['gyro']['x'] - before_data['gyro']['x']),
+                        'y': before_data['gyro']['y'] + ratio * (after_data['gyro']['y'] - before_data['gyro']['y']),
+                        'z': before_data['gyro']['z'] + ratio * (after_data['gyro']['z'] - before_data['gyro']['z'])
+                    }
+                }
+                downsampled_data.append(interpolated_data)
+            elif before_data:
+                sample_data = before_data.copy()
+                sample_data['frame_number'] = frame_idx
+                sample_data['sync_timestamp'] = frame_time
+                downsampled_data.append(sample_data)
+            elif after_data:
+                sample_data = after_data.copy()
+                sample_data['frame_number'] = frame_idx
+                sample_data['sync_timestamp'] = frame_time
+                downsampled_data.append(sample_data)
+        
+        self.data_buffer.clear()
+        self.data_buffer.extend(downsampled_data)
+        
+        removed_count = len(valid_data) - len(downsampled_data)
+        self.connection_status.emit(
+            f"IMU 데이터 동기화: {len(valid_data)}개 → {len(downsampled_data)}개 (30Hz 선형보간)"
+        )
     
     def stop(self):
         """스레드 중지"""
@@ -159,7 +222,6 @@ class IMUReceiver(QThread):
 
 
 class VideoCapture(QThread):
-    """비디오 캡처 스레드"""
     frame_ready = pyqtSignal(np.ndarray)
     status_update = pyqtSignal(str)
     
@@ -265,15 +327,14 @@ class ExperimentControlGUI(QMainWindow):
         self.sync_end_time = None
         self.is_recording = False
         self.session_count = 0
-        self.session_timestamp_str = None  # 세션 타임스탬프 저장용
-        self.current_session_dir = None     # 현재 세션 디렉토리 저장용
+        self.session_timestamp_str = None
+        self.current_session_dir = None
         
         self.init_ui()
         self.setup_connections()
         self.start_threads()
         
     def init_ui(self):
-        """UI 초기화"""
         self.setWindowTitle("실험 데이터 수집 시스템")
         self.setGeometry(100, 100, 1200, 800)
         
@@ -447,9 +508,12 @@ class ExperimentControlGUI(QMainWindow):
         self.sync_end_time = time.time()
         self.is_recording = False
         
+        # 실제 녹화 시간 계산
+        actual_duration = self.sync_end_time - self.sync_start_time
+        
         # 데이터 수집 중지
         video_timestamps = self.video_capture.stop_recording()
-        imu_data = self.imu_receiver.stop_recording()
+        imu_data = self.imu_receiver.stop_recording(actual_duration)  # 실제 duration 전달
         
         # 저장 경로 (시작할 때 생성한 세션 디렉토리 사용)
         session_dir = self.current_session_dir
@@ -466,7 +530,8 @@ class ExperimentControlGUI(QMainWindow):
             imu_path = session_dir / "imu_data.csv"
             with open(imu_path, 'w', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=[
-                    'sync_timestamp',  # 원본 'timestamp' 제거 - IMU 앱 내부 시간은 혼란스러우므로 제외
+                    'frame_number',    # 비디오 프레임 번호 (0부터 시작)
+                    'sync_timestamp',  # 동기화된 타임스탬프
                     'accel_x', 'accel_y', 'accel_z',
                     'gyro_x', 'gyro_y', 'gyro_z'
                 ])
@@ -474,16 +539,16 @@ class ExperimentControlGUI(QMainWindow):
                 
                 for data in imu_data:
                     writer.writerow({
-                        'sync_timestamp': data.get('sync_timestamp', 0),
-                        # 'timestamp': data.get('timestamp', 0),  # 제거: IMU 앱 내부 시간 (혼란 방지)
-                        'accel_x': data['accel']['x'],
-                        'accel_y': data['accel']['y'],
-                        'accel_z': data['accel']['z'],
-                        'gyro_x': data['gyro']['x'],
-                        'gyro_y': data['gyro']['y'],
-                        'gyro_z': data['gyro']['z']
+                        'frame_number': data.get('frame_number', 0),               # 프레임 번호
+                        'sync_timestamp': f"{data.get('sync_timestamp', 0):.3f}", # 30fps: 0.033초 단위
+                        'accel_x': f"{data['accel']['x']:.3f}",                   # 가속도: 소수점 셋째 자리까지
+                        'accel_y': f"{data['accel']['y']:.3f}",
+                        'accel_z': f"{data['accel']['z']:.3f}",
+                        'gyro_x': f"{data['gyro']['x']:.5f}",                     # 각속도: 소수점 다섯째 자리까지
+                        'gyro_y': f"{data['gyro']['y']:.5f}",
+                        'gyro_z': f"{data['gyro']['z']:.5f}"
                     })
-            self.log(f"IMU 데이터 저장: {len(imu_data)} 샘플")
+            self.log(f"IMU 데이터 저장: {len(imu_data)} 샘플 (30Hz 선형보간, 프레임 동기화)")
         
         # 메타데이터 저장
         metadata = {
@@ -493,7 +558,9 @@ class ExperimentControlGUI(QMainWindow):
             'duration': self.sync_end_time - self.sync_start_time,  # 유지: 실험 지속 시간 (중요)
             'video_fps': VIDEO_FPS,
             'video_frames': len(video_timestamps) if video_timestamps else 0,
+            'imu_hz': VIDEO_FPS,  # IMU도 30Hz로 동기화
             'imu_samples': len(imu_data),
+            'sync_method': 'frame_sync_interpolation',  # 프레임 단위 선형보간 동기화
             'timestamp': datetime.now().isoformat()       # 유지: 실험 날짜/시간 기록용
         }
         
