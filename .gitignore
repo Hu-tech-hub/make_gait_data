@@ -1,1 +1,140 @@
-.vision_gait
+# === Python 관련 ===
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# === 가상환경 ===
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+vision_gait_env/
+.venv/
+
+# === IDE 관련 ===
+# PyCharm
+.idea/
+
+# Visual Studio Code
+.vscode/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# === 보행 분석 프로젝트 출력 파일 ===
+# 분석 결과 디렉토리
+gait_analysis_output/
+output/
+results/
+
+# 분석 로그 파일
+*.log
+gait_analysis.log
+
+# 비디오 파일 (용량이 큰 경우)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wmv
+*.flv
+
+# 이미지 파일 (결과 제외하고 싶은 경우)
+# *.png
+# *.jpg
+# *.jpeg
+
+# CSV 결과 파일 (백업용으로 제외하고 싶은 경우)
+# *.csv
+
+# JSON 결과 파일 (백업용으로 제외하고 싶은 경우)
+# *.json
+
+# === 시스템 파일 ===
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# === 임시 파일 ===
+# 임시 비디오 파일
+temp_*
+tmp_*
+*.tmp
+
+# 백업 파일
+*.bak
+*.backup
+
+# === 기타 ===
+# 환경 변수 파일
+.env
+.env.local
+.env.*.local
+
+# 테스트 데이터 (큰 파일들)
+test_videos/
+sample_data/
+large_files/

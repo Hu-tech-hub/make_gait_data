@@ -42,7 +42,7 @@ mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
-# 주요 관절 인덱스 정의
+# 주요 관절 인덱스 정의 (8개 관절만 사용)
 JOINT_INDICES = {
     'left_ankle': 27,
     'right_ankle': 28,
@@ -51,12 +51,7 @@ JOINT_INDICES = {
     'left_hip': 23,
     'right_hip': 24,
     'left_shoulder': 11,
-    'right_shoulder': 12,
-    'nose': 0,
-    'left_heel': 29,
-    'right_heel': 30,
-    'left_foot_index': 31,
-    'right_foot_index': 32
+    'right_shoulder': 12
 }
 
 class GaitAnalyzer:
@@ -236,6 +231,8 @@ class GaitAnalyzer:
         polyorder = 3
         
         filtered_columns = []
+        original_columns_to_remove = []
+        
         for col in df.columns:
             if col not in ['frame_idx', 'timestamp'] and df[col].notna().sum() > window_length:
                 try:
@@ -247,13 +244,27 @@ class GaitAnalyzer:
                     df[filtered_col] = savgol_filter(df[col].fillna(method='ffill').fillna(method='bfill'), 
                                                      window_length, polyorder)
                     filtered_columns.append(filtered_col)
+                    original_columns_to_remove.append(col)  # 원본 컬럼 제거 목록에 추가
                 except:
                     logger.warning(f"필터링 실패: {col}")
         
-        # 결과 저장
+        # 원본 데이터 컬럼 제거 (노이즈가 있는 원본 데이터)
+        df = df.drop(columns=original_columns_to_remove)
+        logger.info(f"원본 노이즈 데이터 {len(original_columns_to_remove)}개 컬럼 제거")
+        
+        # 필터링된 컬럼명에서 '_filtered' 접미사 제거 (깔끔한 컬럼명으로)
+        rename_dict = {}
+        for col in filtered_columns:
+            clean_name = col.replace('_filtered', '')
+            rename_dict[col] = clean_name
+        
+        df = df.rename(columns=rename_dict)
+        logger.info(f"필터링된 데이터 {len(filtered_columns)}개 컬럼의 접미사 '_filtered' 제거")
+        
+        # 결과 저장 (필터링된 데이터만 포함)
         output_path = os.path.join(self.output_dir, 'joint_time_series.csv')
         df.to_csv(output_path, index=False)
-        logger.info(f"관절 시계열 데이터 저장 완료: {output_path}")
+        logger.info(f"관절 시계열 데이터 저장 완료 (필터링된 데이터만): {output_path}")
         
         self.time_series_df = df
         return df
@@ -261,8 +272,12 @@ class GaitAnalyzer:
     def step3_detect_gait_events(self) -> pd.DataFrame:
         """
         Step 3: 규칙 기반 시계열 분석에 의한 보행 이벤트(HS, TO) 검출
+        
+        논문 방법론에 따라 발목의 x축(전후 방향) 변위 신호를 사용:
+        - HS (Heel Strike): x축 변위의 피크(최대값) - 발이 앞으로 최대한 나아간 시점
+        - TO (Toe Off): x축 변위의 계곡(최소값) - 발이 뒤로 최대한 당겨진 시점
         """
-        logger.info("Step 3: 보행 이벤트 검출 시작")
+        logger.info("Step 3: 보행 이벤트 검출 시작 (x축 변위 기반)")
         
         if not hasattr(self, 'time_series_df'):
             raise ValueError("먼저 step2_extract_joint_signals()를 실행하세요.")
@@ -270,18 +285,20 @@ class GaitAnalyzer:
         df = self.time_series_df
         events = []
         
-        # 좌/우 발목 y좌표 시계열 사용
+        # 좌/우 발목 x좌표 시계열 사용 (논문 방법론에 따라)
         for side in ['left', 'right']:
-            ankle_y = df[f'{side}_ankle_y_filtered'].values
+            ankle_x = df[f'{side}_ankle_x'].values  # '_filtered' 접미사 제거됨
             
-            # HS (Heel Strike) 검출 - 국소 최소값
-            hs_indices, hs_properties = find_peaks(-ankle_y,  # 음수로 변환하여 최소값 검출
-                                                   prominence=0.02,
+            # HS (Heel Strike) 검출 - x축 변위의 피크(최대값)
+            # 발이 앞으로 최대한 나아간 지점에서 지면에 닿음
+            hs_indices, hs_properties = find_peaks(ankle_x,  # 직접 피크 검출
+                                                   prominence=0.03,
                                                    distance=15)  # 최소 15프레임 간격
             
-            # TO (Toe Off) 검출 - 국소 최대값
-            to_indices, to_properties = find_peaks(ankle_y,
-                                                   prominence=0.02,
+            # TO (Toe Off) 검출 - x축 변위의 계곡(최소값)
+            # 발이 뒤로 최대한 당겨진 지점에서 지면에서 떨어짐
+            to_indices, to_properties = find_peaks(-ankle_x,  # 음수로 변환하여 최소값 검출
+                                                   prominence=0.03,
                                                    distance=15)
             
             # 이벤트 저장
@@ -290,7 +307,8 @@ class GaitAnalyzer:
                     'frame_idx': int(df.iloc[idx]['frame_idx']),
                     'timestamp': df.iloc[idx]['timestamp'],
                     'event_type': f'HS_{side}',
-                    'ankle_y': ankle_y[idx]
+                    'ankle_x': ankle_x[idx],  # x축 값 저장
+                    'ankle_y': df.iloc[idx][f'{side}_ankle_y']  # '_filtered' 접미사 제거됨
                 })
             
             for idx in to_indices:
@@ -298,7 +316,8 @@ class GaitAnalyzer:
                     'frame_idx': int(df.iloc[idx]['frame_idx']),
                     'timestamp': df.iloc[idx]['timestamp'],
                     'event_type': f'TO_{side}',
-                    'ankle_y': ankle_y[idx]
+                    'ankle_x': ankle_x[idx],  # x축 값 저장
+                    'ankle_y': df.iloc[idx][f'{side}_ankle_y']  # '_filtered' 접미사 제거됨
                 })
         
         # 이벤트 정렬
@@ -316,31 +335,88 @@ class GaitAnalyzer:
         return events_df
     
     def visualize_events(self, df: pd.DataFrame, events_df: pd.DataFrame):
-        """이벤트 검출 결과 시각화"""
-        fig, axes = plt.subplots(2, 1, figsize=(15, 10))
+        """
+        이벤트 검출 결과 시각화 (x축 변위 + 무릎 관절 각도)
+        상단: x축 변위와 HS/TO 이벤트
+        하단: 무릎 관절 각도 변화
+        """
+        fig, axes = plt.subplots(2, 2, figsize=(20, 12))
         
         for i, side in enumerate(['left', 'right']):
-            ax = axes[i]
+            # 상단: x축 변위와 이벤트 (메인 분석)
+            ax_x = axes[0, i]
             
-            # 발목 y좌표 시계열
-            ax.plot(df['timestamp'], df[f'{side}_ankle_y_filtered'], 
-                   label=f'{side} ankle y (filtered)', alpha=0.7)
+            # 발목 x좌표 시계열 (논문 방법론)
+            ax_x.plot(df['timestamp'], df[f'{side}_ankle_x'], 
+                     label=f'{side} ankle x', alpha=0.7, color='green')
             
-            # HS 이벤트
+            # HS 이벤트 (x축 피크)
             hs_events = events_df[events_df['event_type'] == f'HS_{side}']
-            ax.scatter(hs_events['timestamp'], hs_events['ankle_y'], 
-                      color='red', s=100, label=f'HS {side}', zorder=5)
+            if not hs_events.empty:
+                ax_x.scatter(hs_events['timestamp'], hs_events['ankle_x'], 
+                          color='red', s=100, label=f'HS {side} (Peak)', zorder=5)
             
-            # TO 이벤트
+            # TO 이벤트 (x축 계곡)
             to_events = events_df[events_df['event_type'] == f'TO_{side}']
-            ax.scatter(to_events['timestamp'], to_events['ankle_y'], 
-                      color='blue', s=100, label=f'TO {side}', zorder=5)
+            if not to_events.empty:
+                ax_x.scatter(to_events['timestamp'], to_events['ankle_x'], 
+                          color='blue', s=100, label=f'TO {side} (Valley)', zorder=5)
             
-            ax.set_xlabel('Time (s)')
-            ax.set_ylabel('Ankle Y Position')
-            ax.set_title(f'{side.capitalize()} Ankle - Gait Events')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
+            ax_x.set_xlabel('Time (s)')
+            ax_x.set_ylabel('Ankle X Position (Anterior-Posterior)')
+            ax_x.set_title(f'{side.capitalize()} Ankle X-axis - Gait Events')
+            ax_x.legend()
+            ax_x.grid(True, alpha=0.3)
+            
+            # 하단: 무릎 관절 각도 (보행 분석에 중요한 지표)
+            ax_knee = axes[1, i]
+            
+            # 무릎 관절 각도 시계열
+            knee_angle_col = f'{side}_knee_angle'
+            if knee_angle_col in df.columns:
+                ax_knee.plot(df['timestamp'], df[knee_angle_col], 
+                           label=f'{side} knee angle', alpha=0.7, color='purple')
+                
+                # 이벤트 시점에서의 무릎 각도 표시
+                if not hs_events.empty:
+                    hs_knee_angles = []
+                    for _, event in hs_events.iterrows():
+                        frame_idx = int(event['frame_idx'])
+                        if frame_idx < len(df):
+                            knee_angle = df.iloc[frame_idx][knee_angle_col]
+                            hs_knee_angles.append(knee_angle)
+                    
+                    if hs_knee_angles:
+                        ax_knee.scatter(hs_events['timestamp'], hs_knee_angles, 
+                                      color='red', s=100, label=f'HS {side} knee angle', 
+                                      zorder=5, alpha=0.8)
+                
+                if not to_events.empty:
+                    to_knee_angles = []
+                    for _, event in to_events.iterrows():
+                        frame_idx = int(event['frame_idx'])
+                        if frame_idx < len(df):
+                            knee_angle = df.iloc[frame_idx][knee_angle_col]
+                            to_knee_angles.append(knee_angle)
+                    
+                    if to_knee_angles:
+                        ax_knee.scatter(to_events['timestamp'], to_knee_angles, 
+                                      color='blue', s=100, label=f'TO {side} knee angle', 
+                                      zorder=5, alpha=0.8)
+            else:
+                # 해당 관절 각도 데이터가 없는 경우
+                ax_knee.text(0.5, 0.5, f'No {side} knee angle data', 
+                           transform=ax_knee.transAxes, ha='center', va='center')
+            
+            ax_knee.set_xlabel('Time (s)')
+            ax_knee.set_ylabel('Knee Angle (degrees)')
+            ax_knee.set_title(f'{side.capitalize()} Knee Joint Angle')
+            ax_knee.legend()
+            ax_knee.grid(True, alpha=0.3)
+            
+            # 정상 보행 범위 표시 (참고선)
+            ax_knee.axhline(y=160, color='gray', linestyle='--', alpha=0.5, label='Normal range')
+            ax_knee.axhline(y=180, color='gray', linestyle='--', alpha=0.5)
         
         plt.tight_layout()
         plt.savefig(os.path.join(self.output_dir, 'gait_events_plot.png'), dpi=300)
