@@ -10,6 +10,8 @@ import logging
 import os
 import sys
 from datetime import datetime
+import argparse
+import time
 
 # 로컬 모듈 import - GaitAnalyzer 클래스 가져오기
 from gait_class import GaitAnalyzer
@@ -58,69 +60,95 @@ def get_next_output_directory(base_dir: str = "./gait_analysis_output") -> str:
 
 def main():
     """
-    메인 실행 함수 - 4단계 보행 분석 파이프라인 실행
+    메인 실행 함수
     
-    분석 단계:
-    1. 비디오 데이터 준비 및 프레임-타임스탬프 매핑 생성
-    2. MediaPipe를 통한 관절 좌표 추출 및 시계열 신호 생성  
-    3. 규칙 기반 알고리즘으로 보행 이벤트(HS/TO) 검출
-    4. 결과 시각화 및 구조화된 데이터 내보내기
+    사용법:
+    python gait_analyzer.py [--normal-mode] [--video-path path/to/video.mp4]
+    
+    --normal-mode: 일반 연산 모드 (고정밀도, 기본값은 고속모드)
+    --video-path: 분석할 비디오 파일 경로
     """
     
-    # === 파일 경로 및 출력 디렉토리 설정 ===
-    # TODO: 실제 분석할 비디오 파일 경로로 변경 필요
-    video_path = "walking_video_2.mp4"  # 입력 비디오 파일 경로
+    # 명령행 인수 파싱
+    parser = argparse.ArgumentParser(description='보행 분석 프로그램 (기본값: 고속모드)')
+    parser.add_argument('--normal-mode', action='store_true', 
+                       help='일반 연산 모드 활성화 (고정밀도, 기본값은 고속모드)')
+    parser.add_argument('--video-path', type=str, 
+                       default="experiment_data/normal_gait/session_20250604_210219/video.mp4",
+                       help='분석할 비디오 파일 경로')
     
-    # 비디오 파일 존재 여부 확인
-    if not os.path.exists(video_path):
-        logger.error(f"비디오 파일을 찾을 수 없습니다: {video_path}")
-        logger.info("video_path 변수를 실제 비디오 파일 경로로 수정해주세요.")
-        return
+    args = parser.parse_args()
     
-    # 번호가 매겨진 출력 디렉토리 자동 생성
-    output_dir = get_next_output_directory()  # 결과 파일 저장 디렉토리
+    # 비디오 파일 경로
+    video_path = args.video_path
     
-    # === 보행 분석기 초기화 ===
-    # GaitAnalyzer 객체 생성 - 모든 분석 기능을 포함하는 메인 클래스
-    analyzer = GaitAnalyzer(video_path, output_dir)
-    logger.info(f"보행 분석기 초기화 완료")
+    # 고속 모드 설정 (기본값: True, --normal-mode 옵션으로 False)
+    enable_fast_mode = not args.normal_mode
+    
+    # 출력 디렉토리 자동 생성
+    base_output_dir = "gait_analysis_output"
+    output_dir = get_next_output_directory(base_output_dir)
+    
+    logger.info("=" * 80)
+    logger.info("보행 분석 시스템 시작")
+    logger.info("=" * 80)
     logger.info(f"입력 비디오: {video_path}")
     logger.info(f"출력 디렉토리: {output_dir}")
-    logger.info(f"분석 시작 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"연산 모드: {'⚡ 고속 모드 (좌표 3자리, 각도 5자리)' if enable_fast_mode else '🔬 일반 모드 (고정밀도)'}")
+    logger.info(f"시작 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # 비디오 파일 존재 확인
+    if not os.path.exists(video_path):
+        logger.error(f"비디오 파일을 찾을 수 없습니다: {video_path}")
+        return
+    
+    # GaitAnalyzer 인스턴스 생성 (고속 모드 설정)
+    analyzer = GaitAnalyzer(video_path, output_dir, enable_fast_mode=enable_fast_mode)
     
     try:
+        # 전체 실행 시간 측정
+        total_start_time = time.time()
+        
         # === Step 1: 비디오 데이터 준비 ===
-        # 비디오를 프레임 단위로 분해하고 각 프레임에 타임스탬프 할당
-        # 결과: frame_timestamp_mapping.csv 파일 생성
         logger.info("=== Step 1: 비디오 데이터 준비 ===")
+        step1_start = time.time()
         frame_mapping = analyzer.step1_prepare_video_data()
-        logger.info(f"프레임 매핑 완료: {len(frame_mapping)} 프레임")
+        step1_time = time.time() - step1_start
+        logger.info(f"프레임 매핑 완료: {len(frame_mapping)} 프레임 (소요시간: {step1_time:.2f}초)")
         
         # === Step 2: 관절 시계열 신호 추출 ===
-        # MediaPipe로 각 프레임에서 주요 관절 좌표 추출
-        # Savitzky-Golay 필터로 노이즈 제거 및 신호 평활화
-        # 관절 간 거리, 각도 등 파생 변수 계산
-        # 결과: joint_time_series.csv 파일 생성
         logger.info("\n=== Step 2: 관절 시계열 신호 추출 ===")
+        step2_start = time.time()
         joint_data = analyzer.step2_extract_joint_signals()
-        logger.info(f"관절 데이터 추출 완료: {joint_data.shape}")
+        step2_time = time.time() - step2_start
+        logger.info(f"관절 데이터 추출 완료: {joint_data.shape} (소요시간: {step2_time:.2f}초)")
         
         # === Step 3: 보행 이벤트 검출 ===
-        # 발목 x좌표 시계열에서 피크 검출 알고리즘 적용 (논문 방법론)
-        # HS(Heel Strike): 발목 x축 변위의 피크(최대값) - 발이 앞으로 최대한 나아간 시점
-        # TO(Toe Off): 발목 x축 변위의 계곡(최소값) - 발이 뒤로 최대한 당겨진 시점
-        # 결과: gait_events.csv 파일 및 시각화 플롯(무릎 관절 각도 포함) 생성
         logger.info("\n=== Step 3: 보행 이벤트 검출 ===")
+        step3_start = time.time()
         events = analyzer.step3_detect_gait_events()
-        logger.info(f"검출된 이벤트 수: {len(events)}")
+        step3_time = time.time() - step3_start
+        logger.info(f"검출된 이벤트 수: {len(events)} (소요시간: {step3_time:.2f}초)")
         
         # === Step 4: 시각화 및 데이터 구조화 ===
-        # 원본 비디오에 스켈레톤과 이벤트 정보 오버레이
-        # 모든 데이터를 통합하여 최종 분석 결과 생성
-        # 보행 주기, 보폭 등 요약 통계 계산
-        # 결과: 오버레이 비디오, 통합 CSV, 요약 JSON 파일 생성
         logger.info("\n=== Step 4: 시각화 및 데이터 구조화 ===")
+        step4_start = time.time()
         analyzer.step4_visualize_and_export()
+        step4_time = time.time() - step4_start
+        logger.info(f"시각화 및 내보내기 완료 (소요시간: {step4_time:.2f}초)")
+        
+        # 전체 실행 시간
+        total_time = time.time() - total_start_time
+        
+        # === 성능 요약 ===
+        logger.info("\n=== 성능 요약 ===")
+        logger.info(f"Step 1 (데이터 준비): {step1_time:.2f}초")
+        logger.info(f"Step 2 (관절 추출): {step2_time:.2f}초 {'(고속 모드)' if enable_fast_mode else '(일반 모드)'}")
+        logger.info(f"Step 3 (이벤트 검출): {step3_time:.2f}초")
+        logger.info(f"Step 4 (시각화): {step4_time:.2f}초")
+        logger.info(f"전체 실행 시간: {total_time:.2f}초")
+        logger.info(f"초당 프레임 처리: {len(frame_mapping) / total_time:.1f} FPS")
+        logger.info(f"연산 모드: {'⚡ 고속 모드 (좌표 3자리, 각도 5자리)' if enable_fast_mode else '🔬 일반 모드 (고정밀도)'}")
         
         # === 분석 완료 메시지 ===
         logger.info("\n=== 보행 분석 완료 ===")

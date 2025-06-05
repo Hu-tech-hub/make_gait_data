@@ -42,24 +42,23 @@ mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
-# 주요 관절 인덱스 정의 (8개 관절만 사용)
+# 주요 관절 인덱스 정의 (6개 관절만 사용: 엉덩이 2개, 발목 2개, 무릎 2개)
 JOINT_INDICES = {
     'left_ankle': 27,
     'right_ankle': 28,
     'left_knee': 25,
     'right_knee': 26,
     'left_hip': 23,
-    'right_hip': 24,
-    'left_shoulder': 11,
-    'right_shoulder': 12
+    'right_hip': 24
 }
 
 class GaitAnalyzer:
     """보행 분석을 위한 통합 클래스"""
     
-    def __init__(self, video_path: str, output_dir: str = "./output"):
+    def __init__(self, video_path: str, output_dir: str = "./output", enable_fast_mode: bool = True):
         self.video_path = video_path
         self.output_dir = output_dir
+        self.enable_fast_mode = enable_fast_mode  # 고속 연산 모드 (기본값: True)
         os.makedirs(output_dir, exist_ok=True)
         
         # 데이터 저장용 변수
@@ -69,9 +68,54 @@ class GaitAnalyzer:
         self.joint_distances = {}
         self.events = []
         
-    def round_coords(self, value: float) -> float:
-        """좌표값을 소수점 5자리로 제한하여 연산 속도 향상"""
-        return round(float(value), 5)
+        # 고속 연산 모드 설정
+        if self.enable_fast_mode:
+            self.coord_precision = 3  # 좌표 정밀도
+            self.angle_precision = 5  # 각도 정밀도
+            self.distance_precision = 3  # 거리 정밀도
+            self.numpy_dtype = np.float32  # 메모리 절약 및 연산 속도 향상
+            logger.info("고속 연산 모드 활성화: 정밀도 제한 및 float32 사용")
+        else:
+            self.coord_precision = 6
+            self.angle_precision = 8
+            self.distance_precision = 6
+            self.numpy_dtype = np.float64
+            logger.info("일반 연산 모드: 높은 정밀도 사용")
+        
+    def round_coords(self, value: float, precision: int = None) -> float:
+        """좌표값을 지정된 소수점 자리수로 제한하여 연산 속도 향상"""
+        if precision is None:
+            precision = self.coord_precision
+        return round(float(value), precision)
+    
+    def round_angle(self, value: float) -> float:
+        """각도값을 지정된 소수점 자리수로 제한"""
+        return round(float(value), self.angle_precision)
+    
+    def round_distance(self, value: float) -> float:
+        """거리값을 지정된 소수점 자리수로 제한"""
+        return round(float(value), self.distance_precision)
+    
+    def optimize_array(self, arr: np.ndarray) -> np.ndarray:
+        """배열을 고속 연산용으로 최적화"""
+        if self.enable_fast_mode:
+            return np.round(arr.astype(self.numpy_dtype), self.coord_precision)
+        return arr
+    
+    def optimize_coordinates(self, landmarks, joint_indices: dict) -> dict:
+        """관절 좌표를 벡터화하여 한번에 최적화"""
+        coords = {}
+        for joint_name, idx in joint_indices.items():
+            if idx < len(landmarks):
+                landmark = landmarks[idx]
+                coords[joint_name] = {
+                    'x': self.round_coords(landmark.x),
+                    'y': self.round_coords(landmark.y), 
+                    'z': self.round_coords(landmark.z)
+                }
+            else:
+                coords[joint_name] = {'x': np.nan, 'y': np.nan, 'z': np.nan}
+        return coords
     
     def step1_prepare_video_data(self) -> pd.DataFrame:
         """
@@ -128,11 +172,11 @@ class GaitAnalyzer:
         cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8)
         angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
         
-        return self.round_coords(np.degrees(angle))
+        return self.round_angle(np.degrees(angle))
     
     def calculate_distance(self, p1: np.ndarray, p2: np.ndarray) -> float:
         """두 점 사이의 유클리드 거리 계산"""
-        return self.round_coords(np.linalg.norm(p1 - p2))
+        return self.round_distance(np.linalg.norm(p1 - p2))
     
     def step2_extract_joint_signals(self) -> Dict:
         """
@@ -192,52 +236,56 @@ class GaitAnalyzer:
         # DataFrame 변환
         df = pd.DataFrame(time_series_data)
         
-        # 모든 좌표 컬럼을 한 번에 반올림 처리 (속도 최적화)
+        # 좌표 컬럼을 3자리로 반올림, 각도 컬럼을 5자리로 반올림 (속도 최적화)
         coord_columns = [col for col in df.columns if any(coord in col for coord in ['_x', '_y', '_z'])]
         for col in coord_columns:
-            df[col] = df[col].round(5)
+            df[col] = df[col].round(3)  # 좌표는 3자리로 변경
         
-        # 관절 간 거리 계산
-        logger.info("관절 간 거리 계산 중...")
+        # 관절 간 거리 계산 (벡터화)
+        logger.info("관절 간 거리 계산 중 (벡터화 연산)...")
         
-        # 양 발목 간 거리
-        df['ankle_distance'] = df.apply(lambda row: self.calculate_distance(
-            np.array([row['left_ankle_x'], row['left_ankle_y']]),
-            np.array([row['right_ankle_x'], row['right_ankle_y']])
-        ), axis=1)
+        # 양 발목 간 거리 - 벡터화
+        left_ankle = self.optimize_array(df[['left_ankle_x', 'left_ankle_y']].values)
+        right_ankle = self.optimize_array(df[['right_ankle_x', 'right_ankle_y']].values)
+        ankle_distances = np.linalg.norm(left_ankle - right_ankle, axis=1)
+        df['ankle_distance'] = np.round(ankle_distances, self.distance_precision)
         
-        # 무릎-엉덩이 거리 (좌/우)
+        # 무릎-엉덩이 거리 (좌/우) - 벡터화
         for side in ['left', 'right']:
-            df[f'{side}_knee_hip_distance'] = df.apply(lambda row: self.calculate_distance(
-                np.array([row[f'{side}_knee_x'], row[f'{side}_knee_y']]),
-                np.array([row[f'{side}_hip_x'], row[f'{side}_hip_y']])
-            ), axis=1)
+            knee_coords = self.optimize_array(df[[f'{side}_knee_x', f'{side}_knee_y']].values)
+            hip_coords = self.optimize_array(df[[f'{side}_hip_x', f'{side}_hip_y']].values)
+            distances = np.linalg.norm(knee_coords - hip_coords, axis=1)
+            df[f'{side}_knee_hip_distance'] = np.round(distances, self.distance_precision)
         
-        # 관절 각도 계산
-        logger.info("관절 각도 계산 중...")
+        # 관절 각도 계산 (벡터화)
+        logger.info("관절 각도 계산 중 (벡터화 연산)...")
         
-        # 무릎 각도 (엉덩이-무릎-발목)
+        # 무릎 각도 (엉덩이-무릎-발목) - 벡터화
         for side in ['left', 'right']:
-            df[f'{side}_knee_angle'] = df.apply(lambda row: self.calculate_angle(
-                np.array([row[f'{side}_hip_x'], row[f'{side}_hip_y']]),
-                np.array([row[f'{side}_knee_x'], row[f'{side}_knee_y']]),
-                np.array([row[f'{side}_ankle_x'], row[f'{side}_ankle_y']])
-            ), axis=1)
+            hip_coords = self.optimize_array(df[[f'{side}_hip_x', f'{side}_hip_y']].values)
+            knee_coords = self.optimize_array(df[[f'{side}_knee_x', f'{side}_knee_y']].values)
+            ankle_coords = self.optimize_array(df[[f'{side}_ankle_x', f'{side}_ankle_y']].values)
+            
+            # 벡터 계산
+            v1 = hip_coords - knee_coords
+            v2 = ankle_coords - knee_coords
+            
+            # 내적과 노름 계산
+            dot_products = np.sum(v1 * v2, axis=1)
+            norms_v1 = np.linalg.norm(v1, axis=1) + 1e-8
+            norms_v2 = np.linalg.norm(v2, axis=1) + 1e-8
+            
+            # 각도 계산
+            cos_angles = np.clip(dot_products / (norms_v1 * norms_v2), -1.0, 1.0)
+            angles = np.degrees(np.arccos(cos_angles))
+            df[f'{side}_knee_angle'] = np.round(angles, self.angle_precision)
         
-        # 엉덩이 각도 (어깨-엉덩이-무릎)
-        for side in ['left', 'right']:
-            df[f'{side}_hip_angle'] = df.apply(lambda row: self.calculate_angle(
-                np.array([row[f'{side}_shoulder_x'], row[f'{side}_shoulder_y']]),
-                np.array([row[f'{side}_hip_x'], row[f'{side}_hip_y']]),
-                np.array([row[f'{side}_knee_x'], row[f'{side}_knee_y']])
-            ), axis=1)
+        # 시계열 신호 필터링 (고속 모드 최적화)
+        logger.info("시계열 신호 필터링 중 (고속 모드 최적화)...")
         
-        # 시계열 신호 필터링
-        logger.info("시계열 신호 필터링 중...")
-        
-        # Savitzky-Golay 필터 적용
-        window_length = 11  # 홀수여야 함
-        polyorder = 3
+        # Savitzky-Golay 필터 파라미터 (고속 모드에서 조정)
+        window_length = 9 if self.enable_fast_mode else 11  # 홀수여야 함
+        polyorder = 2 if self.enable_fast_mode else 3
         
         filtered_columns = []
         original_columns_to_remove = []
@@ -245,23 +293,37 @@ class GaitAnalyzer:
         for col in df.columns:
             if col not in ['frame_idx', 'timestamp'] and df[col].notna().sum() > window_length:
                 try:
-                    # 결측치 보간
-                    df[col] = df[col].interpolate(method='linear', limit_direction='both')
+                    # 결측치 보간 (고속 모드에서는 간단한 보간)
+                    if self.enable_fast_mode:
+                        df[col] = df[col].interpolate(method='linear', limit_direction='both')
+                    else:
+                        df[col] = df[col].interpolate(method='spline', order=2, limit_direction='both')
                     
                     # 필터링
+                    filtered_values = savgol_filter(df[col].fillna(method='ffill').fillna(method='bfill'), 
+                                                   window_length, polyorder)
+                    
+                    # 고속 모드에서는 필터링 결과도 즉시 반올림
+                    if self.enable_fast_mode:
+                        if 'angle' in col:
+                            filtered_values = np.round(filtered_values, self.angle_precision)
+                        elif 'distance' in col:
+                            filtered_values = np.round(filtered_values, self.distance_precision)
+                        else:  # 좌표
+                            filtered_values = np.round(filtered_values, self.coord_precision)
+                    
                     filtered_col = f'{col}_filtered'
-                    df[filtered_col] = savgol_filter(df[col].fillna(method='ffill').fillna(method='bfill'), 
-                                                     window_length, polyorder)
+                    df[filtered_col] = filtered_values.astype(self.numpy_dtype if self.enable_fast_mode else np.float64)
                     filtered_columns.append(filtered_col)
-                    original_columns_to_remove.append(col)  # 원본 컬럼 제거 목록에 추가
-                except:
-                    logger.warning(f"필터링 실패: {col}")
+                    original_columns_to_remove.append(col)
+                except Exception as e:
+                    logger.warning(f"필터링 실패: {col}, 오류: {e}")
         
-        # 원본 데이터 컬럼 제거 (노이즈가 있는 원본 데이터)
+        # 원본 데이터 컬럼 제거 (메모리 절약)
         df = df.drop(columns=original_columns_to_remove)
-        logger.info(f"원본 노이즈 데이터 {len(original_columns_to_remove)}개 컬럼 제거")
+        logger.info(f"원본 노이즈 데이터 {len(original_columns_to_remove)}개 컬럼 제거 (메모리 절약)")
         
-        # 필터링된 컬럼명에서 '_filtered' 접미사 제거 (깔끔한 컬럼명으로)
+        # 필터링된 컬럼명에서 '_filtered' 접미사 제거
         rename_dict = {}
         for col in filtered_columns:
             clean_name = col.replace('_filtered', '')
@@ -269,6 +331,37 @@ class GaitAnalyzer:
         
         df = df.rename(columns=rename_dict)
         logger.info(f"필터링된 데이터 {len(filtered_columns)}개 컬럼의 접미사 '_filtered' 제거")
+        
+        # 고속 모드에서는 추가 반올림 과정 생략 (이미 처리됨)
+        if not self.enable_fast_mode:
+            # 일반 모드에서만 추가 반올림 수행
+            angle_columns = [col for col in df.columns if 'angle' in col]
+            distance_columns = [col for col in df.columns if 'distance' in col]
+            
+            for col in angle_columns:
+                df[col] = df[col].round(self.angle_precision)
+            
+            for col in distance_columns:
+                df[col] = df[col].round(self.distance_precision)
+        
+        logger.info("데이터 정밀도 최적화 완료")
+        
+        # 최종 저장 전 모든 수치 데이터 반올림 (CSV 출력 형식 통일)
+        coord_columns = [col for col in df.columns if any(coord in col for coord in ['_x', '_y', '_z'])]
+        angle_columns = [col for col in df.columns if 'angle' in col]
+        distance_columns = [col for col in df.columns if 'distance' in col]
+        
+        # 좌표는 3자리로 반올림
+        for col in coord_columns:
+            df[col] = df[col].round(3)
+        
+        # 각도는 5자리로 반올림  
+        for col in angle_columns:
+            df[col] = df[col].round(5)
+            
+        # 거리는 3자리로 반올림
+        for col in distance_columns:
+            df[col] = df[col].round(3)
         
         # 결과 저장 (필터링된 데이터만 포함)
         output_path = os.path.join(self.output_dir, 'joint_time_series.csv')
@@ -331,6 +424,12 @@ class GaitAnalyzer:
         
         # 이벤트 정렬
         events_df = pd.DataFrame(events).sort_values('frame_idx')
+        
+        # 이벤트 수치 데이터 반올림 (좌표는 3자리)
+        numeric_columns = ['ankle_x', 'ankle_y']
+        for col in numeric_columns:
+            if col in events_df.columns:
+                events_df[col] = events_df[col].round(3)
         
         # 이벤트 검증 (시각화)
         self.visualize_events(df, events_df)
@@ -542,6 +641,23 @@ class GaitAnalyzer:
                     df.loc[frame_idx, 'event_type'] += ',' + event['event_type']
                 else:
                     df.loc[frame_idx, 'event_type'] = event['event_type']
+        
+        # 최종 저장 전 모든 수치 데이터 반올림 (CSV 출력 형식 통일)
+        coord_columns = [col for col in df.columns if any(coord in col for coord in ['_x', '_y', '_z'])]
+        angle_columns = [col for col in df.columns if 'angle' in col]
+        distance_columns = [col for col in df.columns if 'distance' in col]
+        
+        # 좌표는 3자리로 반올림
+        for col in coord_columns:
+            df[col] = df[col].round(3)
+        
+        # 각도는 5자리로 반올림  
+        for col in angle_columns:
+            df[col] = df[col].round(5)
+            
+        # 거리는 3자리로 반올림
+        for col in distance_columns:
+            df[col] = df[col].round(3)
         
         # 최종 구조화 데이터 저장
         final_output_path = os.path.join(self.output_dir, 'gait_analysis_complete.csv')

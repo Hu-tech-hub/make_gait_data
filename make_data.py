@@ -247,6 +247,7 @@ class VideoCapture(QThread):
         
         # 카메라 설정
         self.cap.set(cv2.CAP_PROP_FPS, VIDEO_FPS)
+        
         actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))

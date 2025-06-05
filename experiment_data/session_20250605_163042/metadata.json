@@ -1,0 +1,12 @@
+{
+  "session_id": 1,
+  "sync_start_time_seoul": "2025-06-05 16:30:42",
+  "sync_end_time_seoul": "2025-06-05 16:30:46",
+  "duration": 4.026252269744873,
+  "video_fps": 30,
+  "video_frames": 121,
+  "imu_hz": 30,
+  "imu_samples": 120,
+  "sync_method": "frame_sync_interpolation",
+  "timestamp": "2025-06-05T16:30:48.585699"
+}
