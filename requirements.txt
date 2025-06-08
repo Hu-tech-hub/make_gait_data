@@ -1,40 +1,82 @@
-# Gait Analysis Project Dependencies
-# MediaPipe-based Gait Event Detection System
+# Vision Gait Analysis System Dependencies
+# MediaPipe-based Gait Event Detection and Analysis System
+# Compatible with Python 3.8+
 
-# === Core Libraries ===
+# === Core Computer Vision and Media Processing ===
 # Computer vision and video processing
 opencv-python>=4.8.0,<5.0.0
 
-# Pose estimation and joint detection
+# Pose estimation and joint detection - MediaPipe
 mediapipe>=0.10.0,<0.11.0
 
 # === Numerical Computing and Data Processing ===
-# Basic numerical operations
+# Basic numerical operations and array processing
 numpy>=1.24.0,<2.0.0
 
-# Data manipulation and analysis
+# Data manipulation and CSV/Excel processing
 pandas>=2.0.0,<3.0.0
 
 # === Signal Processing and Scientific Computing ===
-# Signal filtering, peak detection, etc.
+# Signal filtering, peak detection, noise reduction
 scipy>=1.10.0,<2.0.0
 
-# === Visualization ===
-# Graph and plot generation
+# === GUI Framework and Visualization ===
+# Cross-platform GUI framework
+PyQt5>=5.15.0,<6.0.0
+
+# Interactive plotting and real-time graphs for GUI
+pyqtgraph>=0.13.0,<1.0.0
+
+# General plotting and visualization (for offline analysis)
 matplotlib>=3.7.0,<4.0.0
 
-# === Additional Utilities (Optional) ===
-# Progress bar display (optional)
-tqdm>=4.65.0
+# === Network and Data Communication ===
+# Built-in socket library (no installation needed)
+# For IMU data TCP communication
 
-# Jupyter notebook support (development, optional)
+# === File Processing and Data Formats ===
+# JSON processing (built-in json module)
+# CSV processing (built-in csv module)
+# Path handling (built-in pathlib module)
+
+# === Additional System Libraries ===
+# Progress bar display for batch processing
+tqdm>=4.65.0,<5.0.0
+
+# Date and time handling (built-in datetime module)
+# Threading support (built-in threading module)
+
+# === Optional Development Dependencies ===
+# Uncomment for development and testing
+
+# Jupyter notebook support
 # jupyter>=1.0.0
 # ipykernel>=6.20.0
+# notebook>=6.4.0
 
-# === Development Tools (Optional) ===
-# Code formatting (development)
+# Code formatting and linting
 # black>=23.0.0
 # flake8>=6.0.0
+# autopep8>=2.0.0
 
-# Type checking (development)
-# mypy>=1.0.0 
+# Type checking
+# mypy>=1.0.0
+
+# Testing framework
+# pytest>=7.0.0
+# pytest-qt>=4.2.0
+
+# === Platform-specific Notes ===
+# Windows: Ensure Visual C++ Redistributable is installed
+# macOS: May require: brew install pyqt5
+# Linux: May require: sudo apt-get install python3-pyqt5
+
+# === Hardware-specific Dependencies ===
+# For Raspberry Pi IMU data collection (optional)
+# smbus2>=0.4.1  # I2C communication
+# bitstring>=3.1.9  # Binary data processing
+
+# === Memory and Performance Optimization ===
+# For large dataset processing, consider:
+# dask>=2023.1.0  # Parallel computing
+# numba>=0.56.0   # JIT compilation for numpy 

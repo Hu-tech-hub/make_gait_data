@@ -1,692 +1,651 @@
+# 보행 분석 시스템 (Gait Analysis System)
+# ==========================================
+# 이 시스템은 MediaPipe Pose 기반 관절 추정과 IMU 데이터 동기화를 통해 
+# HS(Heel Strike), TO(Toe Off) 이벤트를 검출하고 시각화합니다.
+
+# ======================
+# 1. gait_class.py
+# ======================
 """
-보행 분석 연구 지원 코드
-MediaPipe Pose 기반 관절 데이터 분석 및 보행 이벤트(HS/TO) 검출
+gait_class.py - 보행 분석 핵심 로직 모듈
 
-권장 파일명: gait_classes.py 또는 gait_analyzer_core.py
-
-주요 클래스:
-- GaitAnalyzer: 보행 분석을 위한 통합 클래스
-  * step1_prepare_video_data(): 비디오 데이터 준비
-  * step2_extract_joint_signals(): 관절 시계열 신호 추출  
-  * step3_detect_gait_events(): 보행 이벤트 검출
-  * step4_visualize_and_export(): 시각화 및 결과 내보내기
-
-필요한 의존성:
-- OpenCV (cv2): 비디오 처리
-- MediaPipe: 포즈 추정
-- NumPy: 수치 연산
-- Pandas: 데이터 조작
-- SciPy: 신호 처리 및 필터링
-- Matplotlib: 시각화
+이 모듈은 다음 기능을 제공합니다:
+1. 보행 방향 감지 (forward/backward)
+2. 발목 좌표 노이즈 제거
+3. HS/TO 이벤트 검출
+4. 데이터 동기화 및 라벨링
 """
 
-import cv2
-import mediapipe as mp
 import numpy as np
 import pandas as pd
-import json
-from scipy.signal import find_peaks, savgol_filter
+import cv2
+import mediapipe as mp
+from scipy.signal import find_peaks, butter, filtfilt, medfilt
 from scipy.ndimage import gaussian_filter1d
-import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
-import os
-from typing import Dict, List, Tuple, Optional
-import logging
+from typing import List, Tuple, Dict, Optional
+import json
+from dataclasses import dataclass
+from datetime import datetime
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
-# MediaPipe 초기화
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
+@dataclass
+class GaitEvent:
+    """보행 이벤트 데이터 클래스"""
+    frame_idx: int
+    event_type: str  # "HS" or "TO"
+    foot: str        # "left" or "right"
+    timestamp: float # 초 단위
+    
+    def to_dict(self):
+        return {
+            'frame': self.frame_idx,
+            'event': self.event_type,
+            'foot': self.foot,
+            'timestamp': self.timestamp
+        }
 
-# 주요 관절 인덱스 정의 (6개 관절만 사용: 엉덩이 2개, 발목 2개, 무릎 2개)
-JOINT_INDICES = {
-    'left_ankle': 27,
-    'right_ankle': 28,
-    'left_knee': 25,
-    'right_knee': 26,
-    'left_hip': 23,
-    'right_hip': 24
-}
 
 class GaitAnalyzer:
-    """보행 분석을 위한 통합 클래스"""
+    """보행 분석 메인 클래스"""
     
-    def __init__(self, video_path: str, output_dir: str = "./output", enable_fast_mode: bool = True):
+    def __init__(self, video_path: str, imu_path: Optional[str] = None):
+        """
+        초기화 함수
+        
+        Args:
+            video_path (str): 보행 영상 파일 경로
+            imu_path (str, optional): IMU 데이터 CSV 파일 경로
+        """
         self.video_path = video_path
-        self.output_dir = output_dir
-        self.enable_fast_mode = enable_fast_mode  # 고속 연산 모드 (기본값: True)
-        os.makedirs(output_dir, exist_ok=True)
+        self.imu_path = imu_path
         
-        # 데이터 저장용 변수
-        self.frame_data = []
-        self.joint_coordinates = {}
-        self.joint_angles = {}
-        self.joint_distances = {}
-        self.events = []
-        
-        # 고속 연산 모드 설정
-        if self.enable_fast_mode:
-            self.coord_precision = 3  # 좌표 정밀도
-            self.angle_precision = 5  # 각도 정밀도
-            self.distance_precision = 3  # 거리 정밀도
-            self.numpy_dtype = np.float32  # 메모리 절약 및 연산 속도 향상
-            logger.info("고속 연산 모드 활성화: 정밀도 제한 및 float32 사용")
-        else:
-            self.coord_precision = 6
-            self.angle_precision = 8
-            self.distance_precision = 6
-            self.numpy_dtype = np.float64
-            logger.info("일반 연산 모드: 높은 정밀도 사용")
-        
-    def round_coords(self, value: float, precision: int = None) -> float:
-        """좌표값을 지정된 소수점 자리수로 제한하여 연산 속도 향상"""
-        if precision is None:
-            precision = self.coord_precision
-        return round(float(value), precision)
-    
-    def round_angle(self, value: float) -> float:
-        """각도값을 지정된 소수점 자리수로 제한"""
-        return round(float(value), self.angle_precision)
-    
-    def round_distance(self, value: float) -> float:
-        """거리값을 지정된 소수점 자리수로 제한"""
-        return round(float(value), self.distance_precision)
-    
-    def optimize_array(self, arr: np.ndarray) -> np.ndarray:
-        """배열을 고속 연산용으로 최적화"""
-        if self.enable_fast_mode:
-            return np.round(arr.astype(self.numpy_dtype), self.coord_precision)
-        return arr
-    
-    def optimize_coordinates(self, landmarks, joint_indices: dict) -> dict:
-        """관절 좌표를 벡터화하여 한번에 최적화"""
-        coords = {}
-        for joint_name, idx in joint_indices.items():
-            if idx < len(landmarks):
-                landmark = landmarks[idx]
-                coords[joint_name] = {
-                    'x': self.round_coords(landmark.x),
-                    'y': self.round_coords(landmark.y), 
-                    'z': self.round_coords(landmark.z)
-                }
-            else:
-                coords[joint_name] = {'x': np.nan, 'y': np.nan, 'z': np.nan}
-        return coords
-    
-    def step1_prepare_video_data(self) -> pd.DataFrame:
-        """
-        Step 1: 데이터 준비 및 비디오 전처리
-        비디오를 프레임 단위로 분해하고 타임스탬프 매핑 테이블 생성
-        """
-        logger.info("Step 1: 비디오 데이터 준비 시작")
-        
-        cap = cv2.VideoCapture(self.video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        logger.info(f"비디오 정보: FPS={fps}, 총 프레임 수={total_frames}")
-        
-        # 프레임-타임스탬프 매핑 생성
-        frame_timestamp_mapping = []
-        
-        for frame_idx in range(total_frames):
-            timestamp = frame_idx / fps
-            frame_timestamp_mapping.append({
-                'frame_idx': frame_idx,
-                'timestamp': timestamp,
-                'timestamp_ms': int(timestamp * 1000)
-            })
-        
-        cap.release()
-        
-        # DataFrame으로 저장
-        df_mapping = pd.DataFrame(frame_timestamp_mapping)
-        mapping_path = os.path.join(self.output_dir, 'frame_timestamp_mapping.csv')
-        df_mapping.to_csv(mapping_path, index=False)
-        
-        logger.info(f"프레임-타임스탬프 매핑 저장 완료: {mapping_path}")
-        
-        return df_mapping
-    
-    def extract_pose_landmarks(self, image):
-        """MediaPipe를 사용하여 관절 좌표 추출"""
-        with mp_pose.Pose(
+        # MediaPipe 초기화
+        self.mp_pose = mp.solutions.pose
+        self.pose = self.mp_pose.Pose(
             static_image_mode=False,
             model_complexity=2,
             enable_segmentation=False,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
-        ) as pose:
-            results = pose.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-            return results
-    
-    def calculate_angle(self, p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) -> float:
-        """세 점 사이의 각도 계산 (p2가 꼭짓점)"""
-        v1 = p1 - p2
-        v2 = p3 - p2
+        )
         
-        cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8)
-        angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+        # 비디오 정보
+        self.cap = cv2.VideoCapture(video_path)
+        self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        return self.round_angle(np.degrees(angle))
+        # 데이터 저장용 변수
+        self.landmarks_data = []
+        self.walking_direction = None
+        self.gait_events = []
+        
+        # IMU 데이터 로드
+        if imu_path:
+            self.imu_data = pd.read_csv(imu_path)
+        else:
+            self.imu_data = None
     
-    def calculate_distance(self, p1: np.ndarray, p2: np.ndarray) -> float:
-        """두 점 사이의 유클리드 거리 계산"""
-        return self.round_distance(np.linalg.norm(p1 - p2))
-    
-    def step2_extract_joint_signals(self) -> Dict:
+    def extract_initial_landmarks_for_direction(self, frames_count: int = 15) -> pd.DataFrame:
         """
-        Step 2: 관심 관절의 시계열 신호 생성 및 전처리
-        """
-        logger.info("Step 2: 관절 시계열 신호 추출 시작")
+        방향 감지용 초기 프레임 랜드마크 추출 (발목 Z축만)
         
-        cap = cv2.VideoCapture(self.video_path)
+        Args:
+            frames_count (int): 추출할 초기 프레임 수 (15프레임으로 축소)
+            
+        Returns:
+            pd.DataFrame: 초기 프레임의 발목 Z축 좌표 데이터
+        """
+        print(f"방향 감지용 초기 {frames_count}프레임 처리 중...")
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        
         frame_idx = 0
+        initial_landmarks = []
         
-        # 시계열 데이터 저장용 딕셔너리
-        time_series_data = {
-            'frame_idx': [],
-            'timestamp': []
-        }
-        
-        # 관절별 좌표 초기화
-        for joint_name in JOINT_INDICES.keys():
-            for coord in ['x', 'y', 'z']:
-                time_series_data[f'{joint_name}_{coord}'] = []
-        
-        while cap.isOpened():
-            ret, frame = cap.read()
+        while frame_idx < frames_count:
+            ret, frame = self.cap.read()
             if not ret:
                 break
-            
-            # MediaPipe로 관절 추출
-            results = self.extract_pose_landmarks(frame)
-            
+                
+            # RGB 변환 및 포즈 추정
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.pose.process(frame_rgb)
+                
             if results.pose_landmarks:
                 landmarks = results.pose_landmarks.landmark
                 
-                # 프레임 정보 저장
-                time_series_data['frame_idx'].append(frame_idx)
-                time_series_data['timestamp'].append(frame_idx / cap.get(cv2.CAP_PROP_FPS))
+                # 발목 Z축만 추출 (방향 감지용 - 발목만으로 충분)
+                data = {
+                    'left_ankle_z': landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE].z,
+                    'right_ankle_z': landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE].z,
+                }
                 
-                # 각 관절 좌표 저장
-                for joint_name, idx in JOINT_INDICES.items():
-                    if idx < len(landmarks):
-                        landmark = landmarks[idx]
-                        time_series_data[f'{joint_name}_x'].append(self.round_coords(landmark.x))
-                        time_series_data[f'{joint_name}_y'].append(self.round_coords(landmark.y))
-                        time_series_data[f'{joint_name}_z'].append(self.round_coords(landmark.z))
-                    else:
-                        # 누락된 경우 NaN 처리
-                        time_series_data[f'{joint_name}_x'].append(np.nan)
-                        time_series_data[f'{joint_name}_y'].append(np.nan)
-                        time_series_data[f'{joint_name}_z'].append(np.nan)
-            
+                initial_landmarks.append(data)
+                
             frame_idx += 1
-            
-            if frame_idx % 100 == 0:
-                logger.info(f"처리 중: {frame_idx} 프레임")
-        
-        cap.release()
-        
-        # DataFrame 변환
-        df = pd.DataFrame(time_series_data)
-        
-        # 좌표 컬럼을 3자리로 반올림, 각도 컬럼을 5자리로 반올림 (속도 최적화)
-        coord_columns = [col for col in df.columns if any(coord in col for coord in ['_x', '_y', '_z'])]
-        for col in coord_columns:
-            df[col] = df[col].round(3)  # 좌표는 3자리로 변경
-        
-        # 관절 간 거리 계산 (벡터화)
-        logger.info("관절 간 거리 계산 중 (벡터화 연산)...")
-        
-        # 양 발목 간 거리 - 벡터화
-        left_ankle = self.optimize_array(df[['left_ankle_x', 'left_ankle_y']].values)
-        right_ankle = self.optimize_array(df[['right_ankle_x', 'right_ankle_y']].values)
-        ankle_distances = np.linalg.norm(left_ankle - right_ankle, axis=1)
-        df['ankle_distance'] = np.round(ankle_distances, self.distance_precision)
-        
-        # 무릎-엉덩이 거리 (좌/우) - 벡터화
-        for side in ['left', 'right']:
-            knee_coords = self.optimize_array(df[[f'{side}_knee_x', f'{side}_knee_y']].values)
-            hip_coords = self.optimize_array(df[[f'{side}_hip_x', f'{side}_hip_y']].values)
-            distances = np.linalg.norm(knee_coords - hip_coords, axis=1)
-            df[f'{side}_knee_hip_distance'] = np.round(distances, self.distance_precision)
-        
-        # 관절 각도 계산 (벡터화)
-        logger.info("관절 각도 계산 중 (벡터화 연산)...")
-        
-        # 무릎 각도 (엉덩이-무릎-발목) - 벡터화
-        for side in ['left', 'right']:
-            hip_coords = self.optimize_array(df[[f'{side}_hip_x', f'{side}_hip_y']].values)
-            knee_coords = self.optimize_array(df[[f'{side}_knee_x', f'{side}_knee_y']].values)
-            ankle_coords = self.optimize_array(df[[f'{side}_ankle_x', f'{side}_ankle_y']].values)
-            
-            # 벡터 계산
-            v1 = hip_coords - knee_coords
-            v2 = ankle_coords - knee_coords
-            
-            # 내적과 노름 계산
-            dot_products = np.sum(v1 * v2, axis=1)
-            norms_v1 = np.linalg.norm(v1, axis=1) + 1e-8
-            norms_v2 = np.linalg.norm(v2, axis=1) + 1e-8
-            
-            # 각도 계산
-            cos_angles = np.clip(dot_products / (norms_v1 * norms_v2), -1.0, 1.0)
-            angles = np.degrees(np.arccos(cos_angles))
-            df[f'{side}_knee_angle'] = np.round(angles, self.angle_precision)
-        
-        # 시계열 신호 필터링 (고속 모드 최적화)
-        logger.info("시계열 신호 필터링 중 (고속 모드 최적화)...")
-        
-        # Savitzky-Golay 필터 파라미터 (고속 모드에서 조정)
-        window_length = 9 if self.enable_fast_mode else 11  # 홀수여야 함
-        polyorder = 2 if self.enable_fast_mode else 3
-        
-        filtered_columns = []
-        original_columns_to_remove = []
-        
-        for col in df.columns:
-            if col not in ['frame_idx', 'timestamp'] and df[col].notna().sum() > window_length:
-                try:
-                    # 결측치 보간 (고속 모드에서는 간단한 보간)
-                    if self.enable_fast_mode:
-                        df[col] = df[col].interpolate(method='linear', limit_direction='both')
-                    else:
-                        df[col] = df[col].interpolate(method='spline', order=2, limit_direction='both')
-                    
-                    # 필터링
-                    filtered_values = savgol_filter(df[col].fillna(method='ffill').fillna(method='bfill'), 
-                                                   window_length, polyorder)
-                    
-                    # 고속 모드에서는 필터링 결과도 즉시 반올림
-                    if self.enable_fast_mode:
-                        if 'angle' in col:
-                            filtered_values = np.round(filtered_values, self.angle_precision)
-                        elif 'distance' in col:
-                            filtered_values = np.round(filtered_values, self.distance_precision)
-                        else:  # 좌표
-                            filtered_values = np.round(filtered_values, self.coord_precision)
-                    
-                    filtered_col = f'{col}_filtered'
-                    df[filtered_col] = filtered_values.astype(self.numpy_dtype if self.enable_fast_mode else np.float64)
-                    filtered_columns.append(filtered_col)
-                    original_columns_to_remove.append(col)
-                except Exception as e:
-                    logger.warning(f"필터링 실패: {col}, 오류: {e}")
-        
-        # 원본 데이터 컬럼 제거 (메모리 절약)
-        df = df.drop(columns=original_columns_to_remove)
-        logger.info(f"원본 노이즈 데이터 {len(original_columns_to_remove)}개 컬럼 제거 (메모리 절약)")
-        
-        # 필터링된 컬럼명에서 '_filtered' 접미사 제거
-        rename_dict = {}
-        for col in filtered_columns:
-            clean_name = col.replace('_filtered', '')
-            rename_dict[col] = clean_name
-        
-        df = df.rename(columns=rename_dict)
-        logger.info(f"필터링된 데이터 {len(filtered_columns)}개 컬럼의 접미사 '_filtered' 제거")
-        
-        # 고속 모드에서는 추가 반올림 과정 생략 (이미 처리됨)
-        if not self.enable_fast_mode:
-            # 일반 모드에서만 추가 반올림 수행
-            angle_columns = [col for col in df.columns if 'angle' in col]
-            distance_columns = [col for col in df.columns if 'distance' in col]
-            
-            for col in angle_columns:
-                df[col] = df[col].round(self.angle_precision)
-            
-            for col in distance_columns:
-                df[col] = df[col].round(self.distance_precision)
-        
-        logger.info("데이터 정밀도 최적화 완료")
-        
-        # 최종 저장 전 모든 수치 데이터 반올림 (CSV 출력 형식 통일)
-        coord_columns = [col for col in df.columns if any(coord in col for coord in ['_x', '_y', '_z'])]
-        angle_columns = [col for col in df.columns if 'angle' in col]
-        distance_columns = [col for col in df.columns if 'distance' in col]
-        
-        # 좌표는 3자리로 반올림
-        for col in coord_columns:
-            df[col] = df[col].round(3)
-        
-        # 각도는 5자리로 반올림  
-        for col in angle_columns:
-            df[col] = df[col].round(5)
-            
-        # 거리는 3자리로 반올림
-        for col in distance_columns:
-            df[col] = df[col].round(3)
-        
-        # 결과 저장 (필터링된 데이터만 포함)
-        output_path = os.path.join(self.output_dir, 'joint_time_series.csv')
-        df.to_csv(output_path, index=False)
-        logger.info(f"관절 시계열 데이터 저장 완료 (필터링된 데이터만): {output_path}")
-        
-        self.time_series_df = df
-        return df
-    
-    def step3_detect_gait_events(self) -> pd.DataFrame:
-        """
-        Step 3: 규칙 기반 시계열 분석에 의한 보행 이벤트(HS, TO) 검출
-        
-        논문 방법론에 따라 발목의 x축(전후 방향) 변위 신호를 사용:
-        - HS (Heel Strike): x축 변위의 피크(최대값) - 발이 앞으로 최대한 나아간 시점
-        - TO (Toe Off): x축 변위의 계곡(최소값) - 발이 뒤로 최대한 당겨진 시점
-        """
-        logger.info("Step 3: 보행 이벤트 검출 시작 (x축 변위 기반)")
-        
-        if not hasattr(self, 'time_series_df'):
-            raise ValueError("먼저 step2_extract_joint_signals()를 실행하세요.")
-        
-        df = self.time_series_df
-        events = []
-        
-        # 좌/우 발목 x좌표 시계열 사용 (논문 방법론에 따라)
-        for side in ['left', 'right']:
-            ankle_x = df[f'{side}_ankle_x'].values  # '_filtered' 접미사 제거됨
-            
-            # HS (Heel Strike) 검출 - x축 변위의 피크(최대값)
-            # 발이 앞으로 최대한 나아간 지점에서 지면에 닿음
-            hs_indices, hs_properties = find_peaks(ankle_x,  # 직접 피크 검출
-                                                   prominence=0.03,
-                                                   distance=15)  # 최소 15프레임 간격
-            
-            # TO (Toe Off) 검출 - x축 변위의 계곡(최소값)
-            # 발이 뒤로 최대한 당겨진 지점에서 지면에서 떨어짐
-            to_indices, to_properties = find_peaks(-ankle_x,  # 음수로 변환하여 최소값 검출
-                                                   prominence=0.03,
-                                                   distance=15)
-            
-            # 이벤트 저장
-            for idx in hs_indices:
-                events.append({
-                    'frame_idx': int(df.iloc[idx]['frame_idx']),
-                    'timestamp': df.iloc[idx]['timestamp'],
-                    'event_type': f'HS_{side}',
-                    'ankle_x': ankle_x[idx],  # x축 값 저장
-                    'ankle_y': df.iloc[idx][f'{side}_ankle_y']  # '_filtered' 접미사 제거됨
-                })
-            
-            for idx in to_indices:
-                events.append({
-                    'frame_idx': int(df.iloc[idx]['frame_idx']),
-                    'timestamp': df.iloc[idx]['timestamp'],
-                    'event_type': f'TO_{side}',
-                    'ankle_x': ankle_x[idx],  # x축 값 저장
-                    'ankle_y': df.iloc[idx][f'{side}_ankle_y']  # '_filtered' 접미사 제거됨
-                })
-        
-        # 이벤트 정렬
-        events_df = pd.DataFrame(events).sort_values('frame_idx')
-        
-        # 이벤트 수치 데이터 반올림 (좌표는 3자리)
-        numeric_columns = ['ankle_x', 'ankle_y']
-        for col in numeric_columns:
-            if col in events_df.columns:
-                events_df[col] = events_df[col].round(3)
-        
-        # 이벤트 검증 (시각화)
-        self.visualize_events(df, events_df)
-        
-        # 이벤트 저장
-        events_path = os.path.join(self.output_dir, 'gait_events.csv')
-        events_df.to_csv(events_path, index=False)
-        logger.info(f"보행 이벤트 저장 완료: {events_path}")
-        
-        self.events_df = events_df
-        return events_df
-    
-    def visualize_events(self, df: pd.DataFrame, events_df: pd.DataFrame):
-        """
-        이벤트 검출 결과 시각화 (x축 변위 + 무릎 관절 각도)
-        상단: x축 변위와 HS/TO 이벤트
-        하단: 무릎 관절 각도 변화
-        """
-        fig, axes = plt.subplots(2, 2, figsize=(20, 12))
-        
-        for i, side in enumerate(['left', 'right']):
-            # 상단: x축 변위와 이벤트 (메인 분석)
-            ax_x = axes[0, i]
-            
-            # 발목 x좌표 시계열 (논문 방법론)
-            ax_x.plot(df['timestamp'], df[f'{side}_ankle_x'], 
-                     label=f'{side} ankle x', alpha=0.7, color='green')
-            
-            # HS 이벤트 (x축 피크)
-            hs_events = events_df[events_df['event_type'] == f'HS_{side}']
-            if not hs_events.empty:
-                ax_x.scatter(hs_events['timestamp'], hs_events['ankle_x'], 
-                          color='red', s=100, label=f'HS {side} (Peak)', zorder=5)
-            
-            # TO 이벤트 (x축 계곡)
-            to_events = events_df[events_df['event_type'] == f'TO_{side}']
-            if not to_events.empty:
-                ax_x.scatter(to_events['timestamp'], to_events['ankle_x'], 
-                          color='blue', s=100, label=f'TO {side} (Valley)', zorder=5)
-            
-            ax_x.set_xlabel('Time (s)')
-            ax_x.set_ylabel('Ankle X Position (Anterior-Posterior)')
-            ax_x.set_title(f'{side.capitalize()} Ankle X-axis - Gait Events')
-            ax_x.legend()
-            ax_x.grid(True, alpha=0.3)
-            
-            # 하단: 무릎 관절 각도 (보행 분석에 중요한 지표)
-            ax_knee = axes[1, i]
-            
-            # 무릎 관절 각도 시계열
-            knee_angle_col = f'{side}_knee_angle'
-            if knee_angle_col in df.columns:
-                ax_knee.plot(df['timestamp'], df[knee_angle_col], 
-                           label=f'{side} knee angle', alpha=0.7, color='purple')
                 
-                # 이벤트 시점에서의 무릎 각도 표시
-                if not hs_events.empty:
-                    hs_knee_angles = []
-                    for _, event in hs_events.iterrows():
-                        frame_idx = int(event['frame_idx'])
-                        if frame_idx < len(df):
-                            knee_angle = df.iloc[frame_idx][knee_angle_col]
-                            hs_knee_angles.append(knee_angle)
-                    
-                    if hs_knee_angles:
-                        ax_knee.scatter(hs_events['timestamp'], hs_knee_angles, 
-                                      color='red', s=100, label=f'HS {side} knee angle', 
-                                      zorder=5, alpha=0.8)
-                
-                if not to_events.empty:
-                    to_knee_angles = []
-                    for _, event in to_events.iterrows():
-                        frame_idx = int(event['frame_idx'])
-                        if frame_idx < len(df):
-                            knee_angle = df.iloc[frame_idx][knee_angle_col]
-                            to_knee_angles.append(knee_angle)
-                    
-                    if to_knee_angles:
-                        ax_knee.scatter(to_events['timestamp'], to_knee_angles, 
-                                      color='blue', s=100, label=f'TO {side} knee angle', 
-                                      zorder=5, alpha=0.8)
-            else:
-                # 해당 관절 각도 데이터가 없는 경우
-                ax_knee.text(0.5, 0.5, f'No {side} knee angle data', 
-                           transform=ax_knee.transAxes, ha='center', va='center')
-            
-            ax_knee.set_xlabel('Time (s)')
-            ax_knee.set_ylabel('Knee Angle (degrees)')
-            ax_knee.set_title(f'{side.capitalize()} Knee Joint Angle')
-            ax_knee.legend()
-            ax_knee.grid(True, alpha=0.3)
-            
-            # 정상 보행 범위 표시 (참고선)
-            ax_knee.axhline(y=160, color='gray', linestyle='--', alpha=0.5, label='Normal range')
-            ax_knee.axhline(y=180, color='gray', linestyle='--', alpha=0.5)
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'gait_events_plot.png'), dpi=300)
-        plt.close()
-    
-    def step4_visualize_and_export(self):
+        return pd.DataFrame(initial_landmarks)
+
+    def extract_pose_landmarks(self, progress_callback=None) -> pd.DataFrame:
         """
-        Step 4: 이벤트 시각화 및 데이터 구조화
+        전체 비디오에서 발목 X좌표 추출 (이벤트 검출용)
+        
+        Args:
+            progress_callback: 진행률 콜백 함수 (current, total)
+            
+        Returns:
+            pd.DataFrame: 프레임별 발목 X좌표 데이터
         """
-        logger.info("Step 4: 이벤트 시각화 및 데이터 구조화 시작")
-        
-        if not hasattr(self, 'events_df'):
-            raise ValueError("먼저 step3_detect_gait_events()를 실행하세요.")
-        
-        # 비디오에 스켈레톤 및 이벤트 오버레이
-        cap = cv2.VideoCapture(self.video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
-        # 출력 비디오 설정
-        output_video_path = os.path.join(self.output_dir, 'gait_analysis_overlay.mp4')
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-        
-        # 이벤트를 프레임 인덱스로 매핑
-        event_map = {}
-        for _, event in self.events_df.iterrows():
-            frame_idx = int(event['frame_idx'])
-            if frame_idx not in event_map:
-                event_map[frame_idx] = []
-            event_map[frame_idx].append(event['event_type'])
+        print("이벤트 검출용 발목 좌표 추출 시작...")
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         
         frame_idx = 0
+        landmarks_list = []
         
-        with mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=2,
-            enable_segmentation=False,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        ) as pose:
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
+                break
+                
+            # RGB 변환 및 포즈 추정
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.pose.process(frame_rgb)
+                
+            if results.pose_landmarks:
+                landmarks = results.pose_landmarks.landmark
+                
+                # 발목 X좌표만 추출 (이벤트 검출용)
+                data = {
+                    'frame': frame_idx,
+                    'timestamp': round(frame_idx / self.fps, 2),  # 소수점 2자리로 제한
+                    'left_ankle_x': landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE].x,
+                    'right_ankle_x': landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE].x,
+                }
+                
+                landmarks_list.append(data)
+                
+            frame_idx += 1
             
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
-                # MediaPipe 처리
-                results = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                
-                if results.pose_landmarks:
-                    # 스켈레톤 그리기
-                    mp_drawing.draw_landmarks(
-                        frame,
-                        results.pose_landmarks,
-                        mp_pose.POSE_CONNECTIONS,
-                        landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
-                    )
-                    
-                    # 이벤트 표시
-                    if frame_idx in event_map:
-                        events = event_map[frame_idx]
-                        y_offset = 50
-                        
-                        for event in events:
-                            color = (0, 0, 255) if 'HS' in event else (255, 0, 0)  # HS: 빨강, TO: 파랑
-                            text = event.replace('_', ' ').upper()
-                            
-                            # 이벤트 텍스트 표시
-                            cv2.putText(frame, text, (50, y_offset), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 3)
-                            
-                            # 발목 위치에 원 그리기
-                            if 'left' in event:
-                                ankle_idx = JOINT_INDICES['left_ankle']
-                            else:
-                                ankle_idx = JOINT_INDICES['right_ankle']
-                            
-                            landmark = results.pose_landmarks.landmark[ankle_idx]
-                            x = int(landmark.x * width)
-                            y = int(landmark.y * height)
-                            cv2.circle(frame, (x, y), 15, color, -1)
-                            
-                            y_offset += 50
-                
-                out.write(frame)
-                frame_idx += 1
-                
-                if frame_idx % 100 == 0:
-                    logger.info(f"처리 중: {frame_idx} 프레임")
+            # 진행률 콜백 호출 (매 프레임마다)
+            if progress_callback:
+                progress_callback(frame_idx, self.total_frames)
+            
+            # 진행률 표시 (60프레임마다 - 콘솔용)
+            if frame_idx % 60 == 0:
+                print(f"처리 중: {frame_idx}/{self.total_frames} 프레임")
         
-        cap.release()
-        out.release()
-        cv2.destroyAllWindows()
-        
-        logger.info(f"오버레이 비디오 저장 완료: {output_video_path}")
-        
-        # 전체 데이터 통합 및 구조화
-        self.export_structured_data()
+        self.landmarks_data = pd.DataFrame(landmarks_list)
+        print(f"총 {len(self.landmarks_data)} 프레임 처리 완료")
+        return self.landmarks_data
     
-    def export_structured_data(self):
-        """모든 데이터를 구조화된 형식으로 저장"""
-        # 시계열 데이터와 이벤트 데이터 병합
-        df = self.time_series_df.copy()
+    def detect_walking_direction(self, initial_frames: int = 15) -> str:
+        """
+        보행 방향 감지 (발목만 사용, 프레임 수 축소)
         
-        # 각 프레임에 이벤트 정보 추가
-        df['event_type'] = ''
-        
-        for _, event in self.events_df.iterrows():
-            frame_idx = int(event['frame_idx'])
-            if frame_idx < len(df):
-                if df.loc[frame_idx, 'event_type']:
-                    df.loc[frame_idx, 'event_type'] += ',' + event['event_type']
-                else:
-                    df.loc[frame_idx, 'event_type'] = event['event_type']
-        
-        # 최종 저장 전 모든 수치 데이터 반올림 (CSV 출력 형식 통일)
-        coord_columns = [col for col in df.columns if any(coord in col for coord in ['_x', '_y', '_z'])]
-        angle_columns = [col for col in df.columns if 'angle' in col]
-        distance_columns = [col for col in df.columns if 'distance' in col]
-        
-        # 좌표는 3자리로 반올림
-        for col in coord_columns:
-            df[col] = df[col].round(3)
-        
-        # 각도는 5자리로 반올림  
-        for col in angle_columns:
-            df[col] = df[col].round(5)
+        Args:
+            initial_frames (int): 분석할 초기 프레임 수 (15프레임으로 축소)
             
-        # 거리는 3자리로 반올림
-        for col in distance_columns:
-            df[col] = df[col].round(3)
+        Returns:
+            str: "forward" 또는 "backward"
+        """
+        print("\n보행 방향 감지 시작...")
         
-        # 최종 구조화 데이터 저장
-        final_output_path = os.path.join(self.output_dir, 'gait_analysis_complete.csv')
-        df.to_csv(final_output_path, index=False)
+        # 초기 프레임에서 발목 Z축 좌표만 추출
+        initial_data = self.extract_initial_landmarks_for_direction(initial_frames)
         
-        # 요약 통계 생성
-        summary = {
-            'total_frames': len(df),
-            'total_duration_seconds': df['timestamp'].max(),
-            'total_HS_left': len(self.events_df[self.events_df['event_type'] == 'HS_left']),
-            'total_HS_right': len(self.events_df[self.events_df['event_type'] == 'HS_right']),
-            'total_TO_left': len(self.events_df[self.events_df['event_type'] == 'TO_left']),
-            'total_TO_right': len(self.events_df[self.events_df['event_type'] == 'TO_right']),
-            'fps': len(df) / df['timestamp'].max() if df['timestamp'].max() > 0 else 0
+        if len(initial_data) == 0:
+            print("경고: 방향 감지용 데이터를 추출할 수 없습니다. 기본값 'forward' 사용")
+            self.walking_direction = "forward"
+            return self.walking_direction
+        
+        # 발목만으로 방향 판별 (훨씬 단순)
+        left_avg_z = initial_data['left_ankle_z'].mean()
+        right_avg_z = initial_data['right_ankle_z'].mean()
+        
+        # Z값 차이로 방향 판별
+        delta_z = right_avg_z - left_avg_z
+        
+        if delta_z < 0:
+            self.walking_direction = "forward"  # 오른쪽이 앞
+            print(f"보행 방향: Forward (→) [delta_z = {delta_z:.3f}]")  # 소수점 3자리로 제한
+        else:
+            self.walking_direction = "backward"  # 왼쪽이 앞
+            print(f"보행 방향: Backward (←) [delta_z = {delta_z:.3f}]")
+        
+        return self.walking_direction
+    
+    def apply_enhanced_noise_reduction(self, signal: np.ndarray) -> np.ndarray:
+        """
+        효율적인 노이즈 제거 파이프라인 (4단계로 간소화)
+        
+        Args:
+            signal (np.ndarray): 원본 시계열 신호
+            
+        Returns:
+            np.ndarray: 노이즈가 제거된 신호
+        """
+        signal = pd.Series(signal)
+        
+        # 1. 결측치 보간 (선형 보간으로 단순화)
+        signal = signal.interpolate(method='linear').ffill().bfill()
+        
+        # 2. 스파이크 제거 (median filter)
+        signal = pd.Series(medfilt(signal.values, kernel_size=5))
+        
+        # 3. Butterworth 저역통과 필터
+        nyquist_freq = self.fps / 2
+        cutoff_freq = 3.0
+        normalized_cutoff = cutoff_freq / nyquist_freq
+        if normalized_cutoff < 1.0:
+            b, a = butter(4, normalized_cutoff, btype='low')
+            signal = filtfilt(b, a, signal.values)
+        
+        # 4. 가우시안 스무딩
+        signal = gaussian_filter1d(signal, sigma=1.5)
+        
+        return signal
+    
+    def detect_gait_events(self) -> List[GaitEvent]:
+        """
+        HS/TO 이벤트 검출 (Step 3)
+        
+        Returns:
+            List[GaitEvent]: 검출된 보행 이벤트 리스트
+        """
+        print("\n보행 이벤트 검출 시작...")
+        
+        # 발목 X좌표 추출 및 노이즈 제거
+        left_ankle_x = self.apply_enhanced_noise_reduction(
+            self.landmarks_data['left_ankle_x'].values
+        )
+        right_ankle_x = self.apply_enhanced_noise_reduction(
+            self.landmarks_data['right_ankle_x'].values
+        )
+        
+        # 보행 방향에 따른 피크 검출 (강화된 파라미터)
+        # prominence: 피크의 현저성 (높을수록 더 명확한 피크만 검출)
+        # distance: 최소 피크 간격 (프레임 단위, 높을수록 중복 검출 방지)
+        # height: 최소 높이 기준 (정규화된 값 기준)
+        
+        prominence_threshold = 0.015  # 0.015에서 0.035로 증가 (더 높은 기준)
+        min_distance = 15  # 10에서 15로 증가 (약 0.5초 간격, 30fps 기준)
+        min_height = 0.02   # 추가: 최소 높이 기준
+        
+        # 디버깅 정보
+        print(f"신호 범위 - 좌측 발목: [{left_ankle_x.min():.3f}, {left_ankle_x.max():.3f}]")
+        print(f"신호 범위 - 우측 발목: [{right_ankle_x.min():.3f}, {right_ankle_x.max():.3f}]")
+        print(f"검출 파라미터 - prominence: {prominence_threshold}, distance: {min_distance}, height: {min_height}")
+        
+        if self.walking_direction == "forward":
+            # Forward: HS=최댓값, TO=최솟값
+            print("Forward 방향: HS=최댓값, TO=최솟값")
+            
+            # HS 검출 (최댓값)
+            hs_left, _ = find_peaks(left_ankle_x, 
+                                   prominence=prominence_threshold, 
+                                   distance=min_distance)
+            hs_right, _ = find_peaks(right_ankle_x, 
+                                    prominence=prominence_threshold, 
+                                    distance=min_distance)
+            
+            # TO 검출 (최솟값, 반전 신호의 최댓값)
+            to_left, _ = find_peaks(-left_ankle_x, 
+                    prominence=prominence_threshold,
+                                   distance=min_distance)
+            to_right, _ = find_peaks(-right_ankle_x, 
+                                    prominence=prominence_threshold, 
+                                    distance=min_distance)
+        else:
+            # Backward: HS=최솟값, TO=최댓값
+            print("Backward 방향: HS=최솟값, TO=최댓값")
+            
+            # HS 검출 (최솟값, 반전 신호의 최댓값)
+            hs_left, _ = find_peaks(-left_ankle_x, 
+                    prominence=prominence_threshold,
+                                   distance=min_distance)
+            hs_right, _ = find_peaks(-right_ankle_x, 
+                                    prominence=prominence_threshold, 
+                                    distance=min_distance)
+            
+            # TO 검출 (최댓값)
+            to_left, _ = find_peaks(left_ankle_x, 
+                                   prominence=prominence_threshold, 
+                                   distance=min_distance)
+            to_right, _ = find_peaks(right_ankle_x, 
+                                    prominence=prominence_threshold, 
+                                    distance=min_distance)
+        
+        # 검출 결과 디버깅
+        print(f"검출된 피크 수:")
+        print(f"  HS_left: {len(hs_left)}, HS_right: {len(hs_right)}")
+        print(f"  TO_left: {len(to_left)}, TO_right: {len(to_right)}")
+        
+        # 이벤트 생성 및 병합
+        events = []
+        
+        # 이벤트 생성 (timestamp 정밀도 제한)
+        for idx in hs_left:
+            events.append(GaitEvent(
+                frame_idx=idx,
+                event_type="HS",
+                foot="left",
+                timestamp=round(idx / self.fps, 2)  # 소수점 2자리로 제한
+            ))
+        
+        for idx in to_left:
+            events.append(GaitEvent(
+                frame_idx=idx,
+                event_type="TO",
+                foot="left",
+                timestamp=round(idx / self.fps, 2)
+            ))
+        
+        for idx in hs_right:
+            events.append(GaitEvent(
+                frame_idx=idx,
+                event_type="HS",
+                foot="right",
+                timestamp=round(idx / self.fps, 2)
+            ))
+        
+        for idx in to_right:
+            events.append(GaitEvent(
+                frame_idx=idx,
+                event_type="TO",
+                foot="right",
+                timestamp=round(idx / self.fps, 2)
+            ))
+        
+        # 시간순 정렬만 수행 (정제 과정 제거)
+        events.sort(key=lambda x: x.frame_idx)
+        
+        self.gait_events = events
+        print(f"총 {len(events)} 개의 보행 이벤트 검출 완료")
+        
+        # 이벤트 요약 출력
+        hs_count = sum(1 for e in events if e.event_type == "HS")
+        to_count = sum(1 for e in events if e.event_type == "TO")
+        left_events = sum(1 for e in events if e.foot == "left")
+        right_events = sum(1 for e in events if e.foot == "right")
+        
+        print(f"  - Heel Strike (HS): {hs_count}개")
+        print(f"  - Toe Off (TO): {to_count}개")
+        print(f"  - 좌측 발: {left_events}개, 우측 발: {right_events}개")
+        
+        return events
+    
+    def analyze_gait_phases(self) -> List[Dict]:
+        """
+        HS/TO 이벤트를 기반으로 보행 단계 분석 (브루탈 이중지지 패턴 인식)
+        
+        HS_left->TO_right 또는 HS_right->TO_left 패턴을 무조건 이중지지로 분류
+        
+        Returns:
+            List[Dict]: 각 구간의 보행 단계 정보
+            [{'start_frame': int, 'end_frame': int, 'phase': str}]
+            phase: 'double_support', 'single_support_left', 'single_support_right', 'non_gait'
+        """
+        if len(self.gait_events) == 0:
+            return [{'start_frame': 0, 'end_frame': self.total_frames-1, 'phase': 'non_gait'}]
+        
+        # 이벤트를 시간순으로 정렬
+        sorted_events = sorted(self.gait_events, key=lambda x: x.frame_idx)
+        
+        # 브루탈 접근법: HS->TO 패턴을 이중지지로 강제 분류
+        double_support_ranges = []
+        
+        for i in range(len(sorted_events) - 1):
+            current_event = sorted_events[i]
+            next_event = sorted_events[i + 1]
+            
+            # HS_left -> TO_right 또는 HS_right -> TO_left 패턴 찾기
+            if (current_event.event_type == "HS" and next_event.event_type == "TO" and 
+                current_event.foot != next_event.foot):
+                
+                double_support_ranges.append({
+                    'start_frame': current_event.frame_idx,
+                    'end_frame': next_event.frame_idx,
+                    'phase': 'double_support'
+                })
+        
+        # 동시 이벤트도 이중지지로 처리 (중복 방지)
+        processed_frames = set()
+        for event in sorted_events:
+            if event.frame_idx not in processed_frames:
+                same_frame_events = [e for e in sorted_events if e.frame_idx == event.frame_idx]
+                if len(same_frame_events) > 1:
+                    has_hs = any(e.event_type == "HS" for e in same_frame_events)
+                    has_to = any(e.event_type == "TO" for e in same_frame_events)
+                    if has_hs and has_to:
+                        double_support_ranges.append({
+                            'start_frame': event.frame_idx,
+                            'end_frame': event.frame_idx,
+                            'phase': 'double_support'
+                        })
+                processed_frames.add(event.frame_idx)
+        
+        # 전체 프레임 범위에서 단계 분류
+        phases = []
+        covered_frames = set()
+        
+        # 1. 이중지지 구간 먼저 추가
+        for ds_range in double_support_ranges:
+            phases.append(ds_range)
+            for frame in range(ds_range['start_frame'], ds_range['end_frame'] + 1):
+                covered_frames.add(frame)
+        
+        # 2. 나머지 구간 분류
+        current_left_contact = False
+        current_right_contact = False
+        
+        # 첫 이벤트로 초기 상태 설정
+        first_event = sorted_events[0]
+        if first_event.event_type == "TO":
+            if first_event.foot == "left":
+                current_left_contact = True
+            else:
+                current_right_contact = True
+        elif first_event.event_type == "HS":
+            if first_event.foot == "left":
+                current_right_contact = True
+            else:
+                current_left_contact = True
+        
+        # 각 이벤트 구간 처리
+        last_covered_frame = -1
+        
+        for i, event in enumerate(sorted_events):
+            # 현재 이벤트로 상태 업데이트
+            if event.event_type == "HS":
+                if event.foot == "left":
+                    current_left_contact = True
+                else:
+                    current_right_contact = True
+            elif event.event_type == "TO":
+                if event.foot == "left":
+                    current_left_contact = False
+                else:
+                    current_right_contact = False
+            
+            # 다음 이벤트까지의 구간 결정
+            if i < len(sorted_events) - 1:
+                next_frame = sorted_events[i + 1].frame_idx
+                end_frame = next_frame - 1
+            else:
+                end_frame = self.total_frames - 1
+            
+            # 이미 이중지지로 분류된 프레임들은 건너뛰기
+            start_frame = event.frame_idx
+            if start_frame in covered_frames:
+                # 이중지지 구간 다음부터 시작
+                start_frame = start_frame + 1
+                while start_frame <= end_frame and start_frame in covered_frames:
+                    start_frame += 1
+            
+            if start_frame <= end_frame:
+                # 현재 접촉 상태에 따른 단계 결정
+                if current_left_contact and current_right_contact:
+                    phase = 'double_support'
+                elif current_left_contact and not current_right_contact:
+                    phase = 'single_support_left'
+                elif not current_left_contact and current_right_contact:
+                    phase = 'single_support_right'
+                else:
+                    phase = 'non_gait'
+                
+                phases.append({
+                    'start_frame': start_frame,
+                    'end_frame': end_frame,
+                    'phase': phase
+                })
+                
+                for frame in range(start_frame, end_frame + 1):
+                    covered_frames.add(frame)
+                    
+                last_covered_frame = end_frame
+        
+        # 3. 첫 번째 이벤트 전까지 non_gait 추가
+        if sorted_events[0].frame_idx > 0:
+            first_uncovered = 0
+            last_uncovered = sorted_events[0].frame_idx - 1
+            
+            # 이미 커버된 프레임들 제외
+            while first_uncovered <= last_uncovered and first_uncovered in covered_frames:
+                first_uncovered += 1
+            
+            if first_uncovered <= last_uncovered:
+                phases.append({
+                    'start_frame': first_uncovered,
+                    'end_frame': last_uncovered,
+                    'phase': 'non_gait'
+                })
+        
+        # 프레임 순서대로 정렬
+        phases.sort(key=lambda x: x['start_frame'])
+        
+        return phases
+    
+    def save_results(self, output_dir: str = "./results"):
+        """
+        분석 결과 저장
+        
+        Args:
+            output_dir (str): 출력 디렉토리 경로
+        """
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 1. 이벤트 CSV 저장
+        events_data = []
+        for event in self.gait_events:
+            events_data.append({
+                'frame': event.frame_idx,
+                'timestamp': event.timestamp,
+                'event_type': event.event_type,
+                'foot': event.foot
+            })
+        
+        events_df = pd.DataFrame(events_data)
+        events_path = os.path.join(output_dir, "gait_events.csv")
+        events_df.to_csv(events_path, index=False)
+        
+        # 2. 보행 단계 CSV 저장
+        phases = self.analyze_gait_phases()
+        phases_df = pd.DataFrame(phases)
+        phases_path = os.path.join(output_dir, "gait_phases.csv")
+        phases_df.to_csv(phases_path, index=False)
+        
+
+        
+        # 3. 분석 요약 정보 CSV 저장
+        summary_data = {
+            'video_path': [self.video_path],
+            'total_frames': [self.total_frames],
+            'fps': [self.fps],
+            'walking_direction': [self.walking_direction],
+            'total_events': [len(self.gait_events)],
+            'hs_events': [sum(1 for e in self.gait_events if e.event_type == "HS")],
+            'to_events': [sum(1 for e in self.gait_events if e.event_type == "TO")],
+            'analysis_date': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
         }
+        summary_df = pd.DataFrame(summary_data)
+        summary_path = os.path.join(output_dir, "analysis_summary.csv")
+        summary_df.to_csv(summary_path, index=False)
         
-        # 보행 주기 분석
-        for side in ['left', 'right']:
-            hs_events = self.events_df[self.events_df['event_type'] == f'HS_{side}']['timestamp'].values
-            if len(hs_events) > 1:
-                stride_times = np.diff(hs_events)
-                summary[f'mean_stride_time_{side}'] = np.mean(stride_times)
-                summary[f'std_stride_time_{side}'] = np.std(stride_times)
-                summary[f'cadence_{side}'] = 60 / np.mean(stride_times) if np.mean(stride_times) > 0 else 0
+        # 4. 통합 이벤트 타임라인 CSV 저장 (IMU 데이터와 매칭용)
+        timeline_data = []
+        for i in range(self.total_frames):
+            row = {
+                'frame': i,
+                'timestamp': i / self.fps,
+                'hs_left': 0,
+                'hs_right': 0,
+                'to_left': 0,
+                'to_right': 0
+            }
+            
+            # 해당 프레임의 이벤트 확인
+            for event in self.gait_events:
+                if event.frame_idx == i:
+                    if event.event_type == "HS" and event.foot == "left":
+                        row['hs_left'] = 1
+                    elif event.event_type == "HS" and event.foot == "right":
+                        row['hs_right'] = 1
+                    elif event.event_type == "TO" and event.foot == "left":
+                        row['to_left'] = 1
+                    elif event.event_type == "TO" and event.foot == "right":
+                        row['to_right'] = 1
+            
+            timeline_data.append(row)
         
-        # 요약 저장
-        summary_path = os.path.join(self.output_dir, 'analysis_summary.json')
-        with open(summary_path, 'w') as f:
-            json.dump(summary, f, indent=4)
+        timeline_df = pd.DataFrame(timeline_data)
+        timeline_path = os.path.join(output_dir, "event_timeline.csv")
+        timeline_df.to_csv(timeline_path, index=False)
         
-        logger.info(f"분석 완료. 결과 저장 위치: {self.output_dir}")
-        logger.info(f"요약 통계: {summary}")
+        # 5. IMU 데이터와 이벤트 라벨 병합 (IMU 데이터가 있는 경우)
+        if self.imu_data is not None:
+            print("IMU 데이터와 이벤트 라벨 병합 중...")
+            
+            # IMU 데이터 복사
+            labeled_imu = self.imu_data.copy()
+            
+            # 이벤트 컬럼 추가
+            labeled_imu['hs_left'] = 0
+            labeled_imu['hs_right'] = 0
+            labeled_imu['to_left'] = 0
+            labeled_imu['to_right'] = 0
+            
+            # 프레임 기준으로 이벤트 매핑
+            if 'frame' in labeled_imu.columns:
+                for event in self.gait_events:
+                    frame_idx = event.frame_idx
+                    if frame_idx < len(labeled_imu):
+                        if event.event_type == "HS" and event.foot == "left":
+                            labeled_imu.loc[labeled_imu['frame'] == frame_idx, 'hs_left'] = 1
+                        elif event.event_type == "HS" and event.foot == "right":
+                            labeled_imu.loc[labeled_imu['frame'] == frame_idx, 'hs_right'] = 1
+                        elif event.event_type == "TO" and event.foot == "left":
+                            labeled_imu.loc[labeled_imu['frame'] == frame_idx, 'to_left'] = 1
+                        elif event.event_type == "TO" and event.foot == "right":
+                            labeled_imu.loc[labeled_imu['frame'] == frame_idx, 'to_right'] = 1
+            
+            # 라벨링된 IMU 데이터 저장
+            labeled_imu_path = os.path.join(output_dir, "imu_data_labeled.csv")
+            labeled_imu.to_csv(labeled_imu_path, index=False)
+            print(f"  - imu_data_labeled.csv: 라벨링된 IMU 데이터")
+        
+        print(f"\n결과 저장 완료: {output_dir}")
+        print(f"  - gait_events.csv: 이벤트 목록")
+        print(f"  - gait_phases.csv: 보행 단계 정보")
+        print(f"  - analysis_summary.csv: 분석 요약")
+        print(f"  - event_timeline.csv: 프레임별 이벤트 타임라인")
+    
+    def get_filtered_ankle_data(self) -> Tuple[np.ndarray, np.ndarray]:
+        """필터링된 발목 X좌표 데이터 반환"""
+        left_ankle_x = self.apply_enhanced_noise_reduction(
+            self.landmarks_data['left_ankle_x'].values
+        )
+        right_ankle_x = self.apply_enhanced_noise_reduction(
+            self.landmarks_data['right_ankle_x'].values
+        )
+        return left_ankle_x, right_ankle_x
+    
