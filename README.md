@@ -1,287 +1,245 @@
-# Vision Gait Analysis System
+# 통합 보행 분석 시스템 (Integrated Gait Analysis System)
 
-> MediaPipe 기반 보행 분석 시스템 - 비디오와 IMU 데이터를 이용한 보행 패턴 분석 및 HS/TO 이벤트 검출
+IMU 센서 데이터와 영상 데이터를 기반으로 보행 분석 및 낙상 위험 예측을 수행하는 통합 시스템입니다.
 
-## 📋 프로젝트 개요
+## 🎯 주요 기능
 
-본 시스템은 MediaPipe Pose 모델을 활용하여 비디오에서 보행 패턴을 분석하고, 다양한 보행 유형(정상, 마비성, 파킨슨, 운동실조성, 통증성 보행)에 대한 **Heel Strike (HS)**와 **Toe Off (TO)** 이벤트를 자동으로 검출하는 통합 분석 도구입니다.
+### 1. 시각적 데이터 확인 및 수정
+- 센서 데이터, 보행 영상, 이벤트 정보의 시간 축 기준 동기화
+- 보행 구간 선택 및 HS/TO 시점 검토/수정
+- 영상 프레임 위 관절 추정 결과 시각적 확인
 
-### 주요 특징
-- 🎯 **MediaPipe 기반 관절 추정**: 실시간 포즈 인식을 통한 발목 좌표 추출
-- 📊 **보행 이벤트 검출**: HS/TO 이벤트 자동 감지 및 시각화
-- 🔄 **배치 처리 지원**: 다수 세션 일괄 분석 기능
-- 📈 **실시간 시각화**: PyQt5 기반 GUI로 분석 결과 실시간 확인
-- 🌊 **신호 처리**: 고급 필터링 및 노이즈 제거 알고리즘 적용
-- 📱 **IMU 데이터 연동**: 센서 데이터와 비디오 동기화 분석
+### 2. 자동 보행 지표 계산
+- MediaPipe 기반 관절 추정 수행
+- 보폭, 속도, 보행 주기, 보행률, ROM 등 주요 지표 자동 산출
+- IMU 시계열과 정렬된 학습용 정답(label) 생성
 
-## 🛠️ 시스템 아키텍처
+### 3. 시계열 회귀 모델 학습
+- LSTM, TCN, 1D CNN 등 다양한 모델 아키텍처 지원
+- IMU 데이터만으로 보행 지표 예측하는 회귀 모델 학습
+- 교차 검증 및 성능 평가
+
+### 4. 실시간 예측 및 검증
+- 학습된 모델을 통한 새로운 IMU 데이터 보행 지표 추론
+- 예측값과 실제값 비교 시각화
+- 오차 분석 및 모델 성능 평가
+
+## 🏗️ 시스템 아키텍처
 
 ```
-vision_gait/
-├── main.py                     # 메인 진입점
-├── gait_analyzer_gui.py        # GUI 기반 단일 분석 도구
-├── batch_gait_analyzer.py      # 배치 처리 GUI
-├── gait_class.py              # 핵심 보행 분석 알고리즘
-├── make_data.py               # 데이터 수집 시스템
-├── experiment_data/           # 실험 데이터 저장소
-│   ├── SA01/                 # 피험자별 폴더
-│   │   ├── normal_gait/      # 정상 보행 세션들
-│   │   ├── ataxic_gait/      # 운동실조성 보행
-│   │   ├── hemiparetic_gait/ # 편마비성 보행
-│   │   ├── pain_gait/        # 통증성 보행
-│   │   └── parkinson_gait/   # 파킨슨성 보행
-│   └── SA02/, SA03/...       # 추가 피험자들
-├── support_label_data/        # 분석 결과 라벨 데이터
-└── gait_analysis_output/      # 분석 결과 출력
+┌─────────────────────────────────────────────────────────────┐
+│                    통합 GUI 시스템                           │
+├─────────────────────────────────────────────────────────────┤
+│ 1. 데이터 동기화 │ 2. 이벤트 검출 │ 3. 지표 계산 │ 4. 모델 학습 │ 5. 예측 검증 │
+└─────────────────────────────────────────────────────────────┘
+┌─────────────────┬─────────────────┬─────────────────┬─────────────────┐
+│  데이터 처리     │   보행 지표      │   시계열 모델    │   성능 평가      │
+│  및 시각화      │   계산          │   학습/예측     │   및 검증       │
+└─────────────────┴─────────────────┴─────────────────┴─────────────────┘
 ```
 
-## 🎯 지원하는 보행 유형
+## 📋 시스템 요구사항
 
-| 보행 유형 | 코드 | 설명 |
-|-----------|------|------|
-| Normal Gait | T01 | 정상 보행 패턴 |
-| Ataxic Gait | T02 | 운동실조성 보행 (균형 장애) |
-| Hemiparetic Gait | T03 | 편마비성 보행 (뇌졸중 후유증) |
-| Pain Gait | T04 | 통증성 보행 (족부/하지 통증) |
-| Parkinson Gait | T05 | 파킨슨성 보행 (경직성 보행) |
+- **Python**: 3.8+
+- **주요 라이브러리**:
+  - OpenCV 4.8+
+  - MediaPipe 0.10+
+  - TensorFlow 2.13+
+  - PyQt5 5.15+
+  - scikit-learn 1.3+
+  - NumPy, Pandas, SciPy
 
-## 🚀 설치 및 환경 설정
+## 🚀 설치 및 설정
 
-### 필수 요구사항
-- Python 3.8 이상
-- OpenCV 호환 웹캠 또는 비디오 파일
-- (선택사항) IMU 센서 (MPU6050 등)
-
-### 설치 방법
-
-1. **저장소 클론**
+### 1. 저장소 클론
 ```bash
-git clone https://github.com/your-username/vision_gait.git
+git clone [repository-url]
 cd vision_gait
 ```
 
-2. **가상환경 생성 (권장)**
-```bash
-python -m venv vision_gait_env
-# Windows
-vision_gait_env\Scripts\activate
-# Mac/Linux
-source vision_gait_env/bin/activate
-```
-
-3. **의존성 설치**
+### 2. 의존성 설치
 ```bash
 pip install -r requirements.txt
 ```
 
-## 🖥️ 사용 방법
+### 3. 시스템 테스트
+```bash
+python test_system.py
+```
 
-### 1. GUI 기반 단일 분석
+## 📊 데이터 형식
 
+### IMU 데이터 (CSV)
+```csv
+frame_number,sync_timestamp,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
+0,0.000,0.086,9.701,1.834,-1.95420,0.05344,-1.72519
+1,0.033,0.077,9.852,1.801,-1.50745,2.10028,-1.74367
+```
+
+### 메타데이터 (JSON)
+```json
+{
+  "session_id": 16,
+  "video_fps": 30,
+  "video_frames": 337,
+  "imu_hz": 30,
+  "imu_samples": 336,
+  "duration": 11.22
+}
+```
+
+### 보행 지표 출력 (CSV)
+```csv
+start_frame,end_frame,foot,stride_length,velocity,cycle_time,cadence,hip_rom,knee_rom,ankle_rom,stance_ratio
+45,89,left,0.523,0.892,1.467,40.9,23.4,45.2,15.8,62.3
+```
+
+## 🖥️ 사용법
+
+### 1. 통합 GUI 실행
+```bash
+python integrated_gait_system_gui.py
+```
+
+### 2. 예제 파이프라인 실행
+```bash
+python example_pipeline.py --video_path path/to/video.mp4 --imu_path path/to/imu_data.csv
+```
+
+### 3. 기존 GUI (이벤트 검출 전용)
 ```bash
 python main.py
 ```
 
-**주요 기능:**
-- 비디오 파일 로드 및 프레임별 탐색
-- 실시간 발목 좌표 시각화
-- HS/TO 이벤트 마커 표시
-- 보행 단계별 색상 구분
-- 분석 결과 저장 (CSV, JSON)
-
-### 2. 배치 처리 분석
-
+### 4. 배치 처리
 ```bash
 python batch_gait_analyzer.py
 ```
 
-**주요 기능:**
-- 다수 세션 선택 및 일괄 처리
-- 진행률 실시간 모니터링  
-- 결과 파일 자동 명명 규칙 적용
-- 처리 로그 및 오류 리포트
+## 📁 프로젝트 구조
 
-### 3. 데이터 수집 시스템
-
-```bash
-python make_data.py
+```
+vision_gait/
+├── integrated_gait_system_gui.py    # 통합 GUI 시스템
+├── gait_metrics_calculator.py       # 보행 지표 계산 모듈
+├── time_series_model.py             # 시계열 회귀 모델
+├── data_processing_utils.py         # 데이터 처리 유틸리티
+├── gait_class.py                    # 기존 보행 분석 클래스
+├── gait_analyzer_gui.py             # 기존 GUI (이벤트 검출)
+├── example_pipeline.py              # 전체 파이프라인 예제
+├── test_system.py                   # 시스템 테스트 스크립트
+├── system_guide.md                  # 상세 사용 가이드
+├── requirements.txt                 # 의존성 목록
+├── experiment_data/                 # 실험 데이터
+├── support_label_data/              # 지원 라벨 데이터
+└── README.md                        # 이 파일
 ```
 
-**주요 기능:**
-- 실시간 비디오 녹화
-- IMU 센서 데이터 TCP 수신
-- 정밀한 타임스탬프 동기화
-- 세션별 자동 저장
+## 🔄 분석 워크플로우
 
-## 📊 분석 결과 형식
+### Step 1: 데이터 준비
+1. 동기화된 IMU 데이터와 보행 영상 준비
+2. 메타데이터 파일 확인
+3. 데이터 품질 검증
 
-### 1. 보행 이벤트 (gait_events.json)
-```json
-{
-  "events": [
-    {
-      "frame": 45,
-      "event": "HS",
-      "foot": "left",
-      "timestamp": 1.5
-    }
-  ],
-  "analysis_info": {
-    "walking_direction": "forward",
-    "total_events": 24,
-    "video_duration": 10.0
-  }
-}
-```
+### Step 2: 이벤트 검출
+1. MediaPipe 기반 관절 추정
+2. HS/TO 이벤트 자동 검출
+3. 시각적 검토 및 수정
 
-### 2. 보행 단계 (support_labels.csv)
-```csv
-frame,timestamp,left_support,right_support,phase
-0,0.000,1,0,left_single_support
-15,0.500,0,1,right_single_support
-30,1.000,1,1,double_support
-```
+### Step 3: 보행 지표 계산
+1. 보행 주기별 공간적 지표 산출
+2. 관절 가동 범위(ROM) 계산
+3. 품질 검증 및 이상치 제거
 
-### 3. 발목 좌표 데이터 (ankle_coordinates.csv)
-```csv
-frame,timestamp,left_ankle_x,right_ankle_x,left_ankle_filtered,right_ankle_filtered
-0,0.000,0.45,0.55,0.451,0.549
-1,0.033,0.46,0.54,0.452,0.548
-```
+### Step 4: 모델 학습
+1. IMU 특징 추출 및 데이터셋 생성
+2. 시계열 회귀 모델 학습
+3. 교차 검증 및 성능 평가
 
-## 🔧 알고리즘 상세
+### Step 5: 예측 및 검증
+1. 새로운 IMU 데이터로 보행 지표 예측
+2. 실제값과 예측값 비교
+3. 모델 성능 분석
 
-### 1. 보행 방향 감지
-- 초기 15프레임에서 발목 Z축 좌표 분석
-- 전진/후진 보행 자동 판별
-- 좌표계 보정 및 정규화
+## 📈 출력 결과
 
-### 2. 신호 처리 파이프라인
-```python
-# 노이즈 제거 다단계 처리
-signal_filtered = apply_enhanced_noise_reduction(raw_signal)
-# 1. 중앙값 필터 (스파이크 제거)
-# 2. 가우시안 필터 (고주파 노이즈)  
-# 3. 버터워스 저역통과 필터
-```
+### 보행 지표
+- **보폭 (Stride Length)**: 동일 발의 연속 HS 간 거리
+- **속도 (Velocity)**: 보폭/보행주기
+- **보행률 (Cadence)**: 분당 걸음 수
+- **관절 ROM**: 엉덩이, 무릎, 발목 가동 범위
+- **입각기 비율**: 전체 주기 대비 입각기 시간
 
-### 3. 이벤트 검출 알고리즘
-- **HS 검출**: 발목 X좌표 극값(peak) 기반
-- **TO 검출**: 발목 X좌표 극값(valley) 기반
-- 적응적 임계값 및 최소 간격 제약 적용
-
-### 4. 보행 단계 분류
-- Single Support: 한 발만 지지
-- Double Support: 양발 동시 지지  
-- Swing Phase: 유각기 (발이 공중에 있는 상태)
-
-## 📈 성능 지표
-
-| 측정 항목 | 성능 |
-|-----------|------|
-| 프레임 처리 속도 | ~30-60 FPS |
-| HS/TO 검출 정확도 | ~85-95% |
-| 메모리 사용량 | ~500MB (1080p 비디오) |
-| 지원 비디오 형식 | MP4, AVI, MOV |
-
-## 🔬 연구 및 임상 활용
-
-### 적용 분야
-- **임상 보행 분석**: 재활의학과, 정형외과
-- **스포츠 과학**: 보행/달리기 폼 분석
-- **연구**: 신경학적 질환 보행 패턴 연구
-- **웨어러블 기술**: IMU 기반 보행 모니터링
-
-### 출력 데이터 활용
-- 보행 속도 계산
-- 보행 주기 분석
-- 좌우 비대칭성 평가
-- 보행 안정성 지표 산출
+### 모델 성능 지표
+- **MAE (Mean Absolute Error)**: 평균 절대 오차
+- **RMSE (Root Mean Square Error)**: 평균 제곱근 오차
+- **R² (Coefficient of Determination)**: 결정 계수
 
 ## 🔧 고급 설정
 
-### IMU 센서 연동 설정
+### 모델 하이퍼파라미터
 ```python
-# 라즈베리파이에서 실행
-# get_data.py 수정 필요
-SERVER_IP = 'YOUR_PC_IP'  # PC IP 주소
-SERVER_PORT = 5000        # 포트 번호
-TARGET_HZ = 30           # 샘플링 주파수
+config = {
+    'model_type': 'lstm',        # 'lstm', 'tcn', 'cnn1d'
+    'window_size': 90,           # IMU 윈도우 크기 (프레임)
+    'overlap': 0.5,              # 윈도우 겹침 비율
+    'test_size': 0.2,            # 테스트 셋 비율
+    'pixel_to_meter_ratio': 0.001 # 픽셀-미터 변환 비율
+}
 ```
 
-### 분석 파라미터 조정
+### 실시간 처리 설정
 ```python
-# gait_class.py에서 설정 가능
-NOISE_REDUCTION_STRENGTH = 0.7    # 노이즈 제거 강도
-MIN_EVENT_INTERVAL = 0.3          # 최소 이벤트 간격 (초)
-DIRECTION_DETECTION_FRAMES = 15   # 방향감지용 프레임 수
+# GPU 가속 활용
+import tensorflow as tf
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    tf.config.experimental.set_memory_growth(gpus[0], True)
 ```
 
-## 🐛 문제 해결
+## 🧪 실험 및 검증
 
-### 일반적인 문제
-
-**Q: MediaPipe 설치 오류**
+### 교차 검증
 ```bash
-pip install --upgrade pip
-pip install mediapipe --no-cache-dir
+python example_pipeline.py --config cross_validation_config.json
 ```
 
-**Q: PyQt5 GUI가 표시되지 않음**
+### 성능 벤치마크
 ```bash
-# Windows
-pip install PyQt5 --upgrade
-# Mac
-brew install pyqt5
+python benchmark_models.py --models lstm,tcn,cnn1d
 ```
-
-**Q: 비디오 코덱 문제**
-```bash
-pip install opencv-python-headless
-# 또는
-pip install opencv-contrib-python
-```
-
-### 성능 최적화
-
-**메모리 사용량 감소:**
-- 비디오 해상도 조정 (720p 권장)
-- 배치 크기 조정
-- 불필요한 데이터 저장 비활성화
-
-**처리 속도 향상:**
-- GPU 가속 활용 (CUDA 설치)
-- MediaPipe 모델 복잡도 조정
-- 멀티프로세싱 활용
-
-## 📄 라이선스
-
-MIT License - 자세한 내용은 [LICENSE](LICENSE) 파일을 참조하세요.
-
-## 🤝 기여하기
-
-1. Fork 프로젝트
-2. Feature 브랜치 생성 (`git checkout -b feature/AmazingFeature`)
-3. 변경사항 커밋 (`git commit -m 'Add some AmazingFeature'`)
-4. 브랜치에 Push (`git push origin feature/AmazingFeature`)
-5. Pull Request 생성
-
-## 📞 지원 및 문의
-
-- **이슈 리포트**: [GitHub Issues](https://github.com/your-username/vision_gait/issues)
-- **기술 문의**: your-email@example.com
-- **문서**: [Wiki](https://github.com/your-username/vision_gait/wiki)
 
 ## 📚 참고 자료
 
-- [MediaPipe Pose](https://google.github.io/mediapipe/solutions/pose.html)
-- [OpenCV Python](https://docs.opencv.org/4.x/d6/d00/tutorial_py_root.html)
-- [PyQt5 Documentation](https://doc.qt.io/qtforpython/)
-- [Gait Analysis Fundamentals](https://www.physio-pedia.com/Gait_Analysis)
+- **MediaPipe**: https://mediapipe.dev/
+- **TensorFlow**: https://www.tensorflow.org/
+- **보행 분석 이론**: 관련 논문 및 연구 자료
+- **시스템 가이드**: `system_guide.md` 참조
+
+## 🤝 기여하기
+
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## 📄 라이선스
+
+이 프로젝트는 MIT 라이선스 하에 배포됩니다. 자세한 내용은 `LICENSE` 파일을 참조하세요.
+
+## 🙏 감사의 말
+
+- MediaPipe 팀의 포즈 추정 기술
+- TensorFlow/Keras 커뮤니티
+- PyQt5 GUI 프레임워크
+- OpenCV 컴퓨터 비전 도구들
+- 보행 분석 연구 커뮤니티
 
 ---
 
-<div align="center">
-  <strong>Vision Gait Analysis System</strong><br>
-  MediaPipe 기반 지능형 보행 분석 도구
-</div> 
+**개발팀**: 보행 분석 연구팀  
+**연락처**: [contact@email.com]  
+**버전**: 1.0.0  
+**최종 업데이트**: 2025년 1월
