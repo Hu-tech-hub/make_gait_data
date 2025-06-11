@@ -176,6 +176,78 @@ class GaitAnalyzer:
         self.landmarks_data = pd.DataFrame(landmarks_list)
         print(f"총 {len(self.landmarks_data)} 프레임 처리 완료")
         return self.landmarks_data
+
+    def extract_full_landmarks_for_analysis(self, progress_callback=None) -> pd.DataFrame:
+        """
+        전체 비디오에서 모든 관절 좌표 추출 (보행 지표 계산용)
+        
+        Args:
+            progress_callback: 진행률 콜백 함수 (current, total)
+            
+        Returns:
+            pd.DataFrame: 프레임별 전체 관절 좌표 데이터
+        """
+        print("보행 지표 계산용 전체 관절 좌표 추출 시작...")
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        
+        frame_idx = 0
+        landmarks_list = []
+        
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
+                break
+                
+            # RGB 변환 및 포즈 추정
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.pose.process(frame_rgb)
+                
+            if results.pose_landmarks:
+                landmarks = results.pose_landmarks.landmark
+                
+                # 보행 분석에 필요한 모든 관절 좌표 추출
+                data = {
+                    'frame': frame_idx,
+                    'timestamp': round(frame_idx / self.fps, 3),
+                    
+                    # 왼쪽 다리
+                    'left_hip_x': landmarks[self.mp_pose.PoseLandmark.LEFT_HIP].x,
+                    'left_hip_y': landmarks[self.mp_pose.PoseLandmark.LEFT_HIP].y,
+                    'left_knee_x': landmarks[self.mp_pose.PoseLandmark.LEFT_KNEE].x,
+                    'left_knee_y': landmarks[self.mp_pose.PoseLandmark.LEFT_KNEE].y,
+                    'left_ankle_x': landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE].x,
+                    'left_ankle_y': landmarks[self.mp_pose.PoseLandmark.LEFT_ANKLE].y,
+                    
+                    # 오른쪽 다리
+                    'right_hip_x': landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP].x,
+                    'right_hip_y': landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP].y,
+                    'right_knee_x': landmarks[self.mp_pose.PoseLandmark.RIGHT_KNEE].x,
+                    'right_knee_y': landmarks[self.mp_pose.PoseLandmark.RIGHT_KNEE].y,
+                    'right_ankle_x': landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE].x,
+                    'right_ankle_y': landmarks[self.mp_pose.PoseLandmark.RIGHT_ANKLE].y,
+                    
+                    # 추가 관절 (필요시)
+                    'left_shoulder_x': landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER].x,
+                    'left_shoulder_y': landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER].y,
+                    'right_shoulder_x': landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER].x,
+                    'right_shoulder_y': landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER].y,
+                }
+                
+                landmarks_list.append(data)
+                
+            frame_idx += 1
+            
+            # 진행률 콜백 호출 (매 프레임마다)
+            if progress_callback:
+                progress_callback(frame_idx, self.total_frames)
+            
+            # 진행률 표시 (30프레임마다 - 콘솔용)
+            if frame_idx % 30 == 0:
+                print(f"관절 좌표 추출 중: {frame_idx}/{self.total_frames} 프레임")
+        
+        self.landmarks_data = pd.DataFrame(landmarks_list)
+        print(f"✅ 전체 관절 좌표 추출 완료: {len(self.landmarks_data)} 프레임")
+        return self.landmarks_data
     
     def detect_walking_direction(self, initial_frames: int = 15) -> str:
         """

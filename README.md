@@ -24,6 +24,144 @@ IMU 센서 데이터와 영상 데이터를 기반으로 보행 분석 및 낙�
 - 예측값과 실제값 비교 시각화
 - 오차 분석 및 모델 성능 평가
 
+## 📊 새로운 Phase 기반 Stride 계산 시스템
+
+### 개요
+r1번 세션에서 얻은 프레임 단위 보행 phase 라벨링 데이터를 활용하여 보다 정확한 보폭 및 주기 계산을 수행합니다.
+
+### Phase 정의
+- `non_gait`: 비보행 구간
+- `double_stance`: 이중지지 (양발이 지면에 접촉)
+- `left_stance`: 좌발 단일지지
+- `right_stance`: 우발 단일지지
+
+### Stride Cycle 정의
+
+#### Right Stride (오른발 주기)
+```
+double_stance → right_stance → double_stance → left_stance
+```
+**보폭 계산:**
+- Step1: `left_stance` 시작 프레임(오른발 heel strike)에서 좌우 발목 거리
+- Step2: `right_stance` 종료 프레임(왼발 heel strike)에서 좌우 발목 거리
+- **결과:** 보폭 = Step1 + Step2
+
+#### Left Stride (왼발 주기)
+```
+double_stance → left_stance → double_stance → right_stance
+```
+**보폭 계산:**
+- Step1: `right_stance` 시작 프레임(왼발 heel strike)에서 좌우 발목 거리
+- Step2: `left_stance` 종료 프레임(오른발 heel strike)에서 좌우 발목 거리
+- **결과:** 보폭 = Step1 + Step2
+
+### 처리 흐름
+
+1. **라벨링 파일에서 주기 탐색** - 좌우 각각의 완전한 stride cycle 검색
+2. **Heel Strike 시점 계산** - 각 주기에서 heel strike 시점을 기준으로 양 발목 간 거리 계산
+3. **보폭 산출** - 두 개의 거리를 더해 최종 보폭 계산
+4. **결과 저장** - 각 주기별 [시작 프레임, 끝 프레임, 주기 종류, 보폭] 정보 저장
+
+### 사용법
+
+#### 기본 사용
+```python
+from gait_calculation_engine import calculate_gait_parameters
+
+# Phase 기반 계산 (기본값)
+results = calculate_gait_parameters(
+    joint_data=joint_positions,
+    timestamps=frame_timestamps,
+    fps=30.0,
+    support_labels=phase_labels,
+    use_phase_method=True  # 새로운 방법 사용
+)
+```
+
+#### 기존 Heel Strike 방법과 비교
+```python
+# 기존 방법
+old_results = calculate_gait_parameters(
+    joint_data=joint_positions,
+    timestamps=frame_timestamps,
+    fps=30.0,
+    support_labels=phase_labels,
+    use_phase_method=False  # 기존 방법 사용
+)
+
+# 새로운 Phase 방법
+new_results = calculate_gait_parameters(
+    joint_data=joint_positions,
+    timestamps=frame_timestamps,
+    fps=30.0,
+    support_labels=phase_labels,
+    use_phase_method=True   # 새로운 방법 사용
+)
+```
+
+#### 엔진 직접 사용
+```python
+from gait_calculation_engine import GaitCalculationEngine
+
+# 엔진 생성
+engine = GaitCalculationEngine(fps=30.0, user_height=1.70)
+
+# Phase 기반 계산
+results = engine.calculate_stride_parameters_by_phases(
+    frame_data=processed_frames,
+    support_labels=phase_labels
+)
+```
+
+### 결과 구조
+
+```python
+{
+    'total_frames': 121,
+    'calculation_method': 'phase_sequence',  # 'phase_sequence' 또는 'heel_strike'
+    'parameters': {
+        'stride_time': {
+            'values': [2.000, 1.967, 1.967],  # 개별 측정값들
+            'mean': 1.978,                     # 평균값
+            'count': 3                         # 측정 횟수
+        },
+        'stride_length': {
+            'values': [1.699, 1.404, 0.984],
+            'mean': 1.362,
+            'count': 3
+        },
+        'velocity': {
+            'values': [0.850, 0.714, 0.500],
+            'mean': 0.688,
+            'count': 3
+        }
+    },
+    'details': [
+        {
+            'foot': 'right',
+            'start_frame': 0,
+            'end_frame': 60,
+            'stride_time': 2.000,
+            'stride_length': 1.699,
+            'velocity': 0.850,
+            'distance1_frame': 41,
+            'distance2_frame': 30,
+            'distance1': 1.154,
+            'distance2': 0.545,
+            'sequence': ['double_stance', 'right_stance', 'double_stance', 'left_stance']
+        },
+        // ... 추가 stride 정보
+    ]
+}
+```
+
+### 제약사항
+
+- **프레임 중복:** 좌우 주기에 프레임이 중복 포함될 수 있음
+- **좌표 변환:** 정규화 좌표 → 픽셀 좌표 → 실제 거리(cm) 변환이 이미 완료된 상태
+- **Stance 종료:** stance 종료 시점을 상대 발의 heel strike로 간주
+- **최소 라벨:** 완전한 stride cycle을 위해 최소 4개의 연속된 phase 라벨 필요
+
 ## 🏗️ 시스템 아키텍처
 
 ```
