@@ -24,6 +24,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@keras.utils.register_keras_serializable()
 class DilatedConvBlock(layers.Layer):
     """
     Dilated Convolution 블록
@@ -74,6 +75,7 @@ class DilatedConvBlock(layers.Layer):
         })
         return config
 
+@keras.utils.register_keras_serializable()
 class TCNStack(layers.Layer):
     """
     TCN 스택: Dilated Conv (1,2,4,8) + Residual 연결

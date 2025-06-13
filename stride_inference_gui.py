@@ -238,6 +238,9 @@ class StrideInferenceGUI(QMainWindow):
         # Splitter 비율 설정
         main_splitter.setSizes([400, 1000])
         
+        # 메뉴바 생성
+        self.create_menu_bar()
+        
         # 상태바
         self.statusBar().showMessage("Ready")
         
@@ -305,6 +308,34 @@ class StrideInferenceGUI(QMainWindow):
         layout.addStretch()
         return panel
     
+    def create_menu_bar(self):
+        """메뉴바 생성"""
+        menubar = self.menuBar()
+        
+        # File 메뉴
+        file_menu = menubar.addMenu('File')
+        
+        # Export 서브메뉴
+        export_menu = file_menu.addMenu('Export Results')
+        
+        # 전체 결과 내보내기
+        export_all_action = export_menu.addAction('Export All Results to CSV')
+        export_all_action.triggered.connect(self.export_all_results_to_csv)
+        
+        # 예측 결과만 내보내기
+        export_pred_action = export_menu.addAction('Export Predictions Only')
+        export_pred_action.triggered.connect(self.export_predictions_to_csv)
+        
+        # 비교 결과만 내보내기
+        export_comp_action = export_menu.addAction('Export Comparison Only')
+        export_comp_action.triggered.connect(self.export_comparison_to_csv)
+        
+        file_menu.addSeparator()
+        
+        # 종료
+        exit_action = file_menu.addAction('Exit')
+        exit_action.triggered.connect(self.close)
+    
     def create_results_panel(self) -> QWidget:
         """결과 패널 생성"""
         panel = QWidget()
@@ -358,7 +389,17 @@ class StrideInferenceGUI(QMainWindow):
         ])
         self.predictions_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         
-        layout.addWidget(QLabel("Detailed Predictions:"))
+        # 예측 결과 테이블 헤더와 버튼
+        table_header_layout = QHBoxLayout()
+        table_header_layout.addWidget(QLabel("Detailed Predictions:"))
+        table_header_layout.addStretch()
+        
+        self.export_predictions_btn = QPushButton("Export to CSV")
+        self.export_predictions_btn.clicked.connect(self.export_predictions_to_csv)
+        self.export_predictions_btn.setEnabled(False)
+        table_header_layout.addWidget(self.export_predictions_btn)
+        
+        layout.addLayout(table_header_layout)
         layout.addWidget(self.predictions_table)
         
         return tab
@@ -392,7 +433,17 @@ class StrideInferenceGUI(QMainWindow):
         ])
         self.comparison_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         
-        layout.addWidget(QLabel("Detailed Comparison:"))
+        # 비교 결과 테이블 헤더와 버튼
+        comparison_header_layout = QHBoxLayout()
+        comparison_header_layout.addWidget(QLabel("Detailed Comparison:"))
+        comparison_header_layout.addStretch()
+        
+        self.export_comparison_btn = QPushButton("Export to CSV")
+        self.export_comparison_btn.clicked.connect(self.export_comparison_to_csv)
+        self.export_comparison_btn.setEnabled(False)
+        comparison_header_layout.addWidget(self.export_comparison_btn)
+        
+        layout.addLayout(comparison_header_layout)
         layout.addWidget(self.comparison_table)
         
         return tab
@@ -535,6 +586,9 @@ class StrideInferenceGUI(QMainWindow):
         self.statusBar().showMessage("Inference completed successfully")
         
         self.add_info("✅ Inference completed successfully!")
+        
+        # CSV 내보내기 버튼 활성화
+        self.export_predictions_btn.setEnabled(True)
     
     def on_inference_error(self, error_message: str):
         """추론 오류 처리"""
@@ -704,10 +758,194 @@ class StrideInferenceGUI(QMainWindow):
                 self.plot_widget.plot_comparison(pred_data, actual_data)
                 
                 self.add_info(f"Comparison completed: MAE={mae:.4f}m, RMSE={rmse:.4f}m, r={correlation:.3f}")
+                
+                # 비교 결과 CSV 내보내기 버튼 활성화
+                self.export_comparison_btn.setEnabled(True)
             
         except Exception as e:
             self.add_info(f"Error in comparison: {e}")
     
+    def export_predictions_to_csv(self):
+        """예측 결과 테이블을 CSV로 내보내기"""
+        if self.predictions_table.rowCount() == 0:
+            QMessageBox.warning(self, "Warning", "No prediction data to export")
+            return
+        
+        try:
+            # 파일 저장 대화상자
+            default_filename = "stride_predictions.csv"
+            if self.current_walking_file:
+                walking_path = Path(self.current_walking_file)
+                base_name = walking_path.stem
+                default_filename = f"{base_name}_predictions.csv"
+            
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Predictions to CSV",
+                default_filename,
+                "CSV Files (*.csv);;All Files (*)"
+            )
+            
+            if not file_path:
+                return
+            
+            # 테이블 데이터를 DataFrame으로 변환
+            headers = []
+            for col in range(self.predictions_table.columnCount()):
+                headers.append(self.predictions_table.horizontalHeaderItem(col).text())
+            
+            data = []
+            for row in range(self.predictions_table.rowCount()):
+                row_data = []
+                for col in range(self.predictions_table.columnCount()):
+                    item = self.predictions_table.item(row, col)
+                    row_data.append(item.text() if item else "")
+                data.append(row_data)
+            
+            # DataFrame 생성 및 저장
+            df = pd.DataFrame(data, columns=headers)
+            df.to_csv(file_path, index=False, encoding='utf-8-sig')
+            
+            self.add_info(f"✅ Predictions exported to: {file_path}")
+            QMessageBox.information(self, "Success", f"Predictions exported successfully to:\n{file_path}")
+            
+        except Exception as e:
+            error_msg = f"Failed to export predictions: {str(e)}"
+            self.add_info(f"❌ {error_msg}")
+            QMessageBox.critical(self, "Error", error_msg)
+    
+    def export_comparison_to_csv(self):
+        """비교 결과 테이블을 CSV로 내보내기"""
+        if self.comparison_table.rowCount() == 0:
+            QMessageBox.warning(self, "Warning", "No comparison data to export")
+            return
+        
+        try:
+            # 파일 저장 대화상자
+            default_filename = "stride_comparison.csv"
+            if self.current_walking_file:
+                walking_path = Path(self.current_walking_file)
+                base_name = walking_path.stem
+                default_filename = f"{base_name}_comparison.csv"
+            
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Comparison to CSV",
+                default_filename,
+                "CSV Files (*.csv);;All Files (*)"
+            )
+            
+            if not file_path:
+                return
+            
+            # 테이블 데이터를 DataFrame으로 변환
+            headers = []
+            for col in range(self.comparison_table.columnCount()):
+                headers.append(self.comparison_table.horizontalHeaderItem(col).text())
+            
+            data = []
+            for row in range(self.comparison_table.rowCount()):
+                row_data = []
+                for col in range(self.comparison_table.columnCount()):
+                    item = self.comparison_table.item(row, col)
+                    row_data.append(item.text() if item else "")
+                data.append(row_data)
+            
+            # DataFrame 생성 및 저장
+            df = pd.DataFrame(data, columns=headers)
+            
+            # 통계 정보도 함께 저장
+            stats_data = {
+                'Metric': ['MAE', 'RMSE', 'Correlation', 'Bias'],
+                'Value': [
+                    self.mae_label.text().split(': ')[1] if ': ' in self.mae_label.text() else '-',
+                    self.rmse_label.text().split(': ')[1] if ': ' in self.rmse_label.text() else '-',
+                    self.correlation_label.text().split(': ')[1] if ': ' in self.correlation_label.text() else '-',
+                    self.bias_label.text().split(': ')[1] if ': ' in self.bias_label.text() else '-'
+                ]
+            }
+            stats_df = pd.DataFrame(stats_data)
+            
+            # 두 개의 시트로 저장 (CSV는 단일 시트이므로 구분자로 분리)
+            with open(file_path, 'w', encoding='utf-8-sig', newline='') as f:
+                f.write("# Comparison Statistics\n")
+                stats_df.to_csv(f, index=False)
+                f.write("\n# Detailed Comparison\n")
+                df.to_csv(f, index=False)
+            
+            self.add_info(f"✅ Comparison results exported to: {file_path}")
+            QMessageBox.information(self, "Success", f"Comparison results exported successfully to:\n{file_path}")
+            
+        except Exception as e:
+            error_msg = f"Failed to export comparison: {str(e)}"
+            self.add_info(f"❌ {error_msg}")
+            QMessageBox.critical(self, "Error", error_msg)
+    
+    def export_all_results_to_csv(self):
+        """모든 결과를 하나의 CSV 파일로 내보내기"""
+        if not self.prediction_results:
+            QMessageBox.warning(self, "Warning", "No results to export")
+            return
+        
+        try:
+            # 파일 저장 대화상자
+            default_filename = "stride_inference_results.csv"
+            if self.current_walking_file:
+                walking_path = Path(self.current_walking_file)
+                base_name = walking_path.stem
+                default_filename = f"{base_name}_inference_results.csv"
+            
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export All Results to CSV",
+                default_filename,
+                "CSV Files (*.csv);;All Files (*)"
+            )
+            
+            if not file_path:
+                return
+            
+            # 예측 결과를 DataFrame으로 변환
+            predictions = self.prediction_results.get('predictions', [])
+            df = pd.DataFrame(predictions)
+            
+            # 컬럼 순서 정리
+            if not df.empty:
+                column_order = [
+                    'cycle_number', 'foot', 'start_frame', 'end_frame',
+                    'sequence_length', 'stride_time', 'predicted_stride_length', 'predicted_velocity'
+                ]
+                # 존재하는 컬럼만 선택
+                available_columns = [col for col in column_order if col in df.columns]
+                df = df[available_columns]
+            
+            # 요약 정보 추가
+            summary_info = {
+                'Subject ID': self.prediction_results.get('subject_id', 'Unknown'),
+                'Total Cycles': self.prediction_results.get('total_cycles', 0),
+                'Mean Stride Length': f"{self.prediction_results.get('mean_stride_length', 0):.3f} m",
+                'Mean Velocity': f"{self.prediction_results.get('mean_velocity', 0):.3f} m/s",
+                'Model Used': Path(self.current_model_path).name if self.current_model_path else 'Unknown',
+                'Walking File': Path(self.current_walking_file).name if self.current_walking_file else 'Unknown',
+                'Labels File': Path(self.current_labels_file).name if self.current_labels_file else 'Unknown'
+            }
+            
+            # CSV 파일에 저장
+            with open(file_path, 'w', encoding='utf-8-sig', newline='') as f:
+                f.write("# Stride Inference Results Summary\n")
+                for key, value in summary_info.items():
+                    f.write(f"# {key}: {value}\n")
+                f.write("\n# Detailed Predictions\n")
+                df.to_csv(f, index=False)
+            
+            self.add_info(f"✅ All results exported to: {file_path}")
+            QMessageBox.information(self, "Success", f"All results exported successfully to:\n{file_path}")
+            
+        except Exception as e:
+            error_msg = f"Failed to export results: {str(e)}"
+            self.add_info(f"❌ {error_msg}")
+            QMessageBox.critical(self, "Error", error_msg)
+
     def add_info(self, message: str):
         """정보 텍스트에 메시지 추가"""
         # UI가 아직 초기화되지 않은 경우 건너뛰기

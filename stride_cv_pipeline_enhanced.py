@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
 """
 Enhanced Stride Analysis Cross-Validation Pipeline
+
+📊 데이터 전처리 파이프라인 Step 5: 전체 검증 및 머신러닝 준비 완료 확인
+
 Subject-wise LOSO 교차검증 완전 검증 시스템 (개선 버전)
+
+주요 기능:
+- 전체 파이프라인 검증 및 품질 관리
+- 4단계 향상된 검증 프로세스
+- Subject 누수 방지 확인
+- RaggedTensor 형태 검증 및 dtype 검증
+- 정규화 적용 확인
 
 개선사항:
 - Step 1: 시퀀스 길이 outlier 검출, 보조 특징 통계 저장
 - Step 2: LOSO 구조 명확화, 2중 검증
 - Step 3: foot 매핑 일관성 검증, 출력 signature 명시  
 - Step 4: dtype 검증, 정규화 적용 확인
+
+입력: 모든 이전 단계의 출력물
+출력: 검증된 머신러닝 준비 완료 데이터셋 + 상세한 검증 리포트
 """
 
 import os

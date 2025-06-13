@@ -1,8 +1,19 @@
 """
 batch_gait_analyzer.py - 배치 보행 분석 GUI
 
+📊 데이터 전처리 파이프라인 Step 1: 보행 단계 라벨 생성
+
 이 모듈은 experiment_data 폴더의 여러 세션을 선택하여 
-일괄적으로 gait_phases.csv를 생성하는 GUI를 제공합니다.
+일괄적으로 support_labels.csv를 생성하는 GUI를 제공합니다.
+
+주요 기능:
+- MediaPipe 기반 포즈 추출 및 보행 이벤트 검출
+- 여러 세션 배치 처리 (GUI 기반)
+- 자동 파일명 매핑 (SA01/normal_gait → S01T01R01_support_labels.csv)
+- 실시간 진행상황 모니터링
+
+입력: experiment_data/SA01/gait_type/session_xxx/video.mp4
+출력: support_label_data/SA01/S01T01R01_support_labels.csv
 """
 
 import sys

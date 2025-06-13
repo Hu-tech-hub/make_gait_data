@@ -1,3 +1,13 @@
+"""
+integrated_gait_system_gui.py - 통합 보행 분석 시스템 GUI
+
+이 모듈은 보행 분석 시스템의 메인 윈도우를 제공합니다.
+데이터 동기화, 보행 지표 계산, 비디오 검증 등 주요 기능을 통합합니다.
+
+Author: Assistant
+Date: 2025-06-14
+"""
+
 import sys
 from PyQt5.QtWidgets import QApplication
 from main_window import MainWindow

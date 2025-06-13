@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 """
 Stride Training Data Processor
+
+📊 데이터 전처리 파이프라인 Step 4: PKL 변환 및 정규화
+
 stride_train_data 폴더의 JSON 파일들을 처리하여 학습용 PKL 데이터로 변환
 Subject-wise LOSO 5-Fold 교차검증 지원
+
+주요 기능:
+- JSON 파일들 유효성 검증 및 시퀀스 길이 필터링 (15~100 프레임)
+- 전역 정규화 통계 계산 (z-score)
+- Subject별 5-Fold LOSO 교차검증 분할 생성
+- PKL 형태로 직렬화 및 메타데이터 생성
+
+입력: stride_train_data/S01T01R01/S01T01R01_Cycles.json
+출력: stride_train_data_pkl/S01T01R01_Cycles.pkl + metadata/ 폴더
 """
 
 import os

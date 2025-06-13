@@ -35,23 +35,19 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 로컬 모듈 import (TCN 모델 클래스들 포함)
+# TCN 커스텀 레이어들을 등록하기 위해 import (데코레이터 방식)
 try:
-    from tcn_model import TCNStack, DilatedConvBlock
-    TCN_CUSTOM_OBJECTS = {
-        'TCNStack': TCNStack,
-        'DilatedConvBlock': DilatedConvBlock
-    }
-    logger.info("✅ TCN 모델 클래스들을 성공적으로 import했습니다.")
+    import tcn_model  # 데코레이터로 자동 등록됨
+    logger.info("✅ TCN 모델 클래스들이 등록되었습니다.")
 except ImportError as e:
-    logger.warning(f"tcn_model을 import할 수 없습니다: {e}. 기본 모델 로드를 시도합니다.")
-    TCN_CUSTOM_OBJECTS = {}
+    logger.warning(f"tcn_model을 import할 수 없습니다: {e}")
+    raise ImportError("TCN 모델을 사용하려면 tcn_model.py가 필요합니다.")
 
 
 class StrideInferencePipeline:
     """Stride 길이 예측 파이프라인"""
     
-    def __init__(self, model_path="models_2/best_fold_5.keras", 
+    def __init__(self, model_path="models/best_fold_5.keras", 
                  metadata_dir="metadata"):
         """
         초기화
@@ -84,13 +80,10 @@ class StrideInferencePipeline:
     def load_model_and_stats(self):
         """모델과 정규화 통계 로드"""
         try:
-            # 모델 로드
-            if TCN_CUSTOM_OBJECTS:
-                self.model = tf.keras.models.load_model(self.model_path, custom_objects=TCN_CUSTOM_OBJECTS)
-                logger.info(f"✅ 모델 로드 성공: {self.model_path}")
-            else:
-                self.model = tf.keras.models.load_model(self.model_path)
-                logger.info(f"✅ 모델 로드 성공: {self.model_path}")
+            # 모델 로드 (데코레이터로 등록된 클래스들은 자동으로 인식됨)
+            self.model = tf.keras.models.load_model(self.model_path)
+            logger.info(f"✅ 모델 로드 성공: {self.model_path}")
+            logger.info("   (데코레이터로 등록된 커스텀 레이어 사용)")
             
             # 정규화 통계 로드
             norm_file = self.metadata_dir / "global_norm_enhanced.npz"

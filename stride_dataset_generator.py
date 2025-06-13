@@ -2,7 +2,19 @@
 # -*- coding: utf-8 -*-
 """
 Stride Dataset Generator GUI
+
+📊 데이터 전처리 파이프라인 Step 3: JSON 데이터셋 생성
+
 stride_analysis_results와 walking_data를 결합하여 JSON 데이터셋 생성
+
+주요 기능:
+- Stride labels에서 cycle 정보 추출
+- Walking data에서 해당 프레임 구간의 IMU 시퀀스 추출
+- 각 cycle별로 sequence + metadata 결합
+- 자동 파일 매칭 및 배치 처리
+
+입력: stride_analysis_results/S01T01R01_stride_labels.csv + walking_data/SA01/S01T01R01.csv
+출력: stride_train_data/S01T01R01/S01T01R01_Cycles.json
 
 Author: Assistant
 Date: 2025-01-12

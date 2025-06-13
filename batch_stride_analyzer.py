@@ -1,8 +1,19 @@
 """
 batch_stride_analyzer.py - 배치 Stride 분석 GUI
 
+📊 데이터 전처리 파이프라인 Step 2: 보폭 분석
+
 gait_calculation_engine.py를 사용하여 여러 세션을 일괄 처리해서
 각 세션마다 stride 분석 결과 CSV를 생성합니다.
+
+주요 기능:
+- 비디오에서 MediaPipe로 관절 좌표 추출
+- Support labels와 자동 매칭 및 동기화
+- Phase 기반 stride cycle 분석
+- 피험자별 신장 정보 활용한 보폭 계산
+
+입력: experiment_data/SA01/gait_type/session_xxx/video.mp4 + support_label_data/SA01/S01T01R01_support_labels.csv
+출력: stride_analysis_results/S01T01R01_stride_labels.csv
 """
 
 import sys
