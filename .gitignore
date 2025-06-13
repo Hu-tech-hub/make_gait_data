@@ -79,6 +79,10 @@ vision_gait_env/
 support_label_data/
 experiment_data/
 results/
+stride_analysis_results/
+stride_train_data/
+stride_train_data_pkl/
+walking_data/
 
 # 분석 로그 파일
 *.log
